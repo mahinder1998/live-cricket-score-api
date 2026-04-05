@@ -7,7 +7,12 @@ import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    HTMLResponse,
+)
 from pydantic import BaseModel, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -64,9 +69,11 @@ class MatchValidator(BaseModel):
 
 
 app = FastAPI(
-    title="Live Cricket Score API",
+    title="Score API",
     version="0.0.1",
-    description="Live Cricket Score JSON API"
+    description="Live Cricket Score JSON API",
+    docs_url=None,
+    redoc_url=None
 )
 
 app.add_middleware(
@@ -97,7 +104,7 @@ async def security_headers(request: Request, call_next):
 
     response.headers["Strict-Transport-Security"] = (
         "max-age=31536000"
-    )   
+    )
 
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
@@ -265,6 +272,134 @@ class ScoreService:
 
         except Exception:
             raise APIError(500, "failed to process score data")
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_docs():
+    try:
+        html = get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title="Live Cricket Score API Docs",
+            swagger_favicon_url="https://fastapi.tiangolo.com/img/favicon.png"
+        )
+
+        content = html.body.decode("utf-8")
+
+        if "</head>" not in content:
+            raise ValueError("Invalid Swagger HTML")
+
+        custom_style = """
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+        <style>
+            html, body {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                overflow-x: hidden;
+                -webkit-text-size-adjust: 100%;
+            }
+
+            .swagger-ui {
+                width: 100%;
+                overflow-x: hidden;
+            }
+
+            .swagger-ui .wrapper {
+                width: 100%;
+                max-width: 100% !important;
+                padding: 10px !important;
+                box-sizing: border-box;
+            }
+
+            .swagger-ui .opblock-summary {
+                flex-wrap: wrap !important;
+                gap: 6px;
+            }
+
+            .swagger-ui .opblock-summary-path {
+                white-space: normal !important;
+                word-break: break-word !important;
+                overflow-wrap: anywhere !important;
+                font-size: 14px !important;
+                line-height: 1.4;
+            }
+
+            .swagger-ui pre,
+            .swagger-ui code,
+            .swagger-ui .microlight,
+            .swagger-ui .highlight-code {
+                white-space: pre-wrap !important;
+                word-break: break-word !important;
+                overflow-wrap: anywhere !important;
+                overflow-x: auto !important;
+                max-width: 100% !important;
+                max-height: 220px !important;
+                overflow-y: auto !important;
+                box-sizing: border-box;
+                font-size: 12px !important;
+                line-height: 1.5 !important;
+                border-radius: 8px;
+            }
+
+            .swagger-ui table {
+                display: block;
+                width: 100%;
+                overflow-x: auto;
+            }
+
+            .swagger-ui textarea,
+            .swagger-ui input,
+            .swagger-ui select {
+                width: 100% !important;
+                box-sizing: border-box;
+                font-size: 16px !important;
+            }
+
+            .swagger-ui .btn {
+                min-height: 42px !important;
+                white-space: normal !important;
+            }
+
+            @media (max-width: 768px) {
+                .swagger-ui .wrapper {
+                    padding: 8px !important;
+                }
+
+                .swagger-ui pre,
+                .swagger-ui code {
+                    max-height: 180px !important;
+                    font-size: 11px !important;
+                }
+            }
+        </style>
+        """
+
+        content = content.replace(
+            "</head>",
+            custom_style + "</head>"
+        )
+
+        response = HTMLResponse(content=content)
+
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        return response
+
+    except Exception:
+        return HTMLResponse(
+            content="""
+            <html>
+                <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Docs Error</title>
+                </head>
+                <body style="font-family:sans-serif;padding:20px;">
+                    <h2>Unable to load Swagger docs</h2>
+                </body>
+            </html>
+            """,
+            status_code=500
+        )
 
 @app.get("/", response_model=ScoreResponse)
 async def root(
