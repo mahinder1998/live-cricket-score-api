@@ -21,6 +21,11 @@ NOT_FOUND = "score not found"
 REQUEST_TIMEOUT = "request timeout"
 INVALID_MATCH_ID = "invalid score id"
 
+# Matches a player name made of words (letters, dots, apostrophes, hyphens),
+# used when scraping the live "Batter R B 4s 6s SR" / "Bowler O M R W ECO"
+# tables directly off the page text.
+NAME_CHARS = r"[A-Za-z][A-Za-z.'\-]*(?:\s[A-Za-z][A-Za-z.'\-]*)*"
+
 
 class APIError(Exception):
     def __init__(self, status_code: int, message: str):
@@ -31,16 +36,24 @@ class APIError(Exception):
 class Batsman(BaseModel):
     name: str = NOT_FOUND
     score: str = NOT_FOUND
+    on_strike: bool = False  # True for the batsman currently on strike (Cricbuzz marks this with "*")
 
 
 class Bowler(BaseModel):
     name: str = NOT_FOUND
+    overs: str = NOT_FOUND
+    maidens: str = NOT_FOUND
+    runs: str = NOT_FOUND
+    wickets: str = NOT_FOUND
+    economy: str = NOT_FOUND
 
 
 class ScoreResponse(BaseModel):
     status: str
     title: str
     score: str
+    all_scores: List[str] = []   # every innings score found (e.g. both teams in a Test)
+    target_info: str = ""        # "XYZ need N runs" style text, if found
     current_batsmen: List[Batsman]
     current_bowler: Bowler
 
@@ -157,8 +170,15 @@ class ScoreService:
     @classmethod
     def format_tree(cls, data: ScoreResponse) -> str:
         batsmen_lines = "\n".join(
-            f"│   ├── {player.name} : {player.score}"
+            f"│   ├── {player.name}{' *' if player.on_strike else ''} : {player.score}"
             for player in data.current_batsmen
+        )
+
+        bowler_line = (
+            f"{data.current_bowler.name}  "
+            f"O:{data.current_bowler.overs} M:{data.current_bowler.maidens} "
+            f"R:{data.current_bowler.runs} W:{data.current_bowler.wickets} "
+            f"ECO:{data.current_bowler.economy}"
         )
 
         return (
@@ -166,10 +186,106 @@ class ScoreService:
             "│\n"
             f"├── Match    : {data.title}\n"
             f"├── Score    : {data.score}\n"
-            f"├── Bowler   : {data.current_bowler.name}\n"
+            f"├── All Scores : {', '.join(data.all_scores) if data.all_scores else NOT_FOUND}\n"
+            f"├── Target   : {data.target_info or NOT_FOUND}\n"
+            f"├── Bowler   : {bowler_line}\n"
             "├── Batsmen\n"
             f"{batsmen_lines}"
         )
+
+    @classmethod
+    def _parse_batsmen_from_table(cls, page_text: str) -> List[Batsman]:
+        """Parses the live 'Batter  R  B  4s  6s  SR' table directly off the
+        page text. This is the primary/preferred source - it also gives us
+        the on-strike marker ('*') which the og:title never contains."""
+        batsmen: List[Batsman] = []
+
+        section = re.search(
+            r"Batter\s+R\s+B\s+4s\s+6s\s+SR(.*?)(?:Bowler\s+O\s+M\s+R\s+W\s+ECO|$)",
+            page_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not section:
+            return batsmen
+
+        for m in re.finditer(
+            rf"({NAME_CHARS})(\s*\*)?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)",
+            section.group(1),
+        ):
+            name, star, runs, balls, _fours, _sixes, _sr = m.groups()
+            batsmen.append(
+                Batsman(
+                    name=cls.clean(name),
+                    score=f"{runs}({balls})",
+                    on_strike=bool(star),
+                )
+            )
+            if len(batsmen) == 2:
+                break
+
+        return batsmen
+
+    @classmethod
+    def _parse_batsmen_from_title(cls, og_title: str) -> List[Batsman]:
+        """Fallback: older method, parses batsmen out of the og:title meta
+        tag. Doesn't know who's on strike (title never marks that)."""
+        batsmen: List[Batsman] = []
+
+        batsman_match = re.search(r"\((.*?)\)\s*\|", og_title)
+        if batsman_match:
+            players = re.findall(
+                r"([A-Za-z\s.'-]+)\s+(\d+\(\d+\))",
+                batsman_match.group(1)
+            )
+            batsmen = [
+                Batsman(name=cls.clean(name), score=cls.clean(score_value))
+                for name, score_value in players[:2]
+            ]
+
+        return batsmen
+
+    @classmethod
+    def _parse_bowler_from_table(cls, page_text: str) -> Optional[Bowler]:
+        """Parses the live 'Bowler  O  M  R  W  ECO' table directly off the
+        page text. Cricbuzz shows the CURRENT bowler's row marked with '*';
+        if two rows are present we prefer the starred (current) one."""
+        section = re.search(
+            r"Bowler\s+O\s+M\s+R\s+W\s+ECO(.*?)(?:Have Your Say|Key Stats|Recent\s*:|$)",
+            page_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not section:
+            return None
+
+        rows = list(re.finditer(
+            rf"({NAME_CHARS})(\s*\*)?\s+(\d+(?:\.\d+)?)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)",
+            section.group(1),
+        ))
+        if not rows:
+            return None
+
+        chosen = next((r for r in rows if r.group(2)), rows[0])
+        name, _star, overs, maidens, runs, wickets, economy = chosen.groups()
+
+        return Bowler(
+            name=cls.clean(name),
+            overs=overs,
+            maidens=maidens,
+            runs=runs,
+            wickets=wickets,
+            economy=economy,
+        )
+
+    @classmethod
+    def _parse_bowler_name_only(cls, page_text: str) -> str:
+        """Last-resort fallback: just get a bowler name if the full table
+        couldn't be parsed for some reason."""
+        bowler_match = re.search(
+            r"Bowler.*?([A-Za-z.'\- ]+?)\s+\d+\s+\d+",
+            page_text,
+            re.IGNORECASE
+        )
+        return cls.clean(bowler_match.group(1)) if bowler_match else NOT_FOUND
 
     @classmethod
     async def fetch_score(cls, match_id: str) -> ScoreResponse:
@@ -206,62 +322,57 @@ class ScoreService:
             og_title = og_tag.get("content", "") if og_tag else ""
 
             score = NOT_FOUND
+            all_scores: List[str] = []
 
-            score_match = re.search(
+            # find every "TEAM RUNS/WKTS (OVERS)" pattern in the title, not
+            # just the first one - this picks up BOTH innings scores when
+            # Cricbuzz's title includes them (common for Test matches).
+            for team, runs, wickets, overs in re.findall(
                 r"([A-Z]{2,4})\s+(\d+)/(\d+)\s*\(([\d.]+)\)",
                 og_title
-            )
+            ):
+                all_scores.append(f"{team} {runs}/{wickets} ({overs})")
 
-            if score_match:
-                team, runs, wickets, overs = score_match.groups()
-                score = f"{team} {runs}/{wickets} ({overs})"
-
-            batsmen = []
-
-            batsman_match = re.search(
-                r"\((.*?)\)\s*\|",
-                og_title
-            )
-
-            if batsman_match:
-                players = re.findall(
-                    r"([A-Za-z\s.'-]+)\s+(\d+\(\d+\))",
-                    batsman_match.group(1)
-                )
-
-                batsmen = [
-                    Batsman(
-                        name=cls.clean(name),
-                        score=cls.clean(score_value)
-                    )
-                    for name, score_value in players[:2]
-                ]
-
-            if len(batsmen) < 2:
-                batsmen = cls.default_batsmen()
+            if all_scores:
+                score = all_scores[0]
 
             page_text = cls.clean(
                 soup.get_text(" ", strip=True)
             )
 
-            bowler_match = re.search(
-                r"Bowler.*?([A-Za-z.'\- ]+?)\s+\d+\s+\d+",
+            # ---- Batsmen: prefer the live scorecard table (gives on-strike
+            # marker too), fall back to og:title parsing if that fails ----
+            batsmen = cls._parse_batsmen_from_table(page_text)
+            if len(batsmen) < 2:
+                batsmen = cls._parse_batsmen_from_title(og_title)
+            if len(batsmen) < 2:
+                batsmen = cls.default_batsmen()
+
+            # ---- Bowler: prefer the live scorecard table (gives full
+            # O/M/R/W/ECO), fall back to name-only if that fails ----
+            bowler = cls._parse_bowler_from_table(page_text)
+            if bowler is None:
+                bowler = Bowler(name=cls._parse_bowler_name_only(page_text))
+
+            # best-effort search for a "need N runs" / target/status line.
+            # Not guaranteed to be present for every match format.
+            target_match = re.search(
+                r"([A-Za-z]{2,4}\s+need\s+\d+\s+runs?[^.|]*)",
                 page_text,
                 re.IGNORECASE
             )
-
-            bowler_name = (
-                cls.clean(bowler_match.group(1))
-                if bowler_match
-                else NOT_FOUND
-            )
+            target_info = cls.clean(target_match.group(1)) if target_match else ""
+            if target_info == NOT_FOUND:
+                target_info = ""
 
             return ScoreResponse(
                 status="success",
                 title=title,
                 score=score,
+                all_scores=all_scores,
+                target_info=target_info,
                 current_batsmen=batsmen,
-                current_bowler=Bowler(name=bowler_name)
+                current_bowler=bowler
             )
 
         except httpx.TimeoutException:
@@ -415,6 +526,8 @@ async def root(
             status="success",
             title="Live Score API",
             score=NOT_FOUND,
+            all_scores=[],
+            target_info="",
             current_batsmen=ScoreService.default_batsmen(),
             current_bowler=Bowler()
         )
