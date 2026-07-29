@@ -42,6 +42,12 @@ AUDIO_PLAYED_DIR = "audio_queue/played"
 STREAM_KEY_FILE = "stream_key.txt"
 RTMP_BASE_URL = "rtmp://a.rtmp.youtube.com/live2/"
 
+# Set this to True to test the whole pipeline WITHOUT a YouTube stream key.
+# Instead of pushing to YouTube, it records ~30 seconds to test_output.mp4
+# so you can download and watch it to confirm video+audio are working.
+TEST_MODE = True
+TEST_DURATION_SECONDS = 30
+
 VIDEO_WIDTH, VIDEO_HEIGHT = 1280, 720
 FRAMERATE = 2          # scoreboard doesn't need to be smooth, 2fps is plenty
 AUDIO_SAMPLE_RATE = 24000
@@ -130,6 +136,12 @@ def audio_writer():
 
 def build_ffmpeg_command(stream_key):
     rtmp_url = RTMP_BASE_URL + stream_key
+    output_args = ["-f", "flv", rtmp_url]
+
+    if TEST_MODE:
+        # Write a local file for a limited duration instead of streaming to YouTube
+        output_args = ["-t", str(TEST_DURATION_SECONDS), "-f", "mp4", "test_output.mp4"]
+
     return [
         "ffmpeg",
         "-hide_banner", "-loglevel", "warning",
@@ -152,13 +164,15 @@ def build_ffmpeg_command(stream_key):
         "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k",
         "-pix_fmt", "yuv420p", "-g", str(FRAMERATE * 2),
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-
-        "-f", "flv", rtmp_url,
-    ]
+    ] + output_args
 
 
 def main():
-    stream_key = read_stream_key()
+    if TEST_MODE:
+        stream_key = "test-mode-no-key-needed"
+        print("[go_live] TEST_MODE is ON - recording locally instead of streaming to YouTube.")
+    else:
+        stream_key = read_stream_key()
     ensure_fifo(SPEECH_FIFO)
 
     if not os.path.exists(CROWD_FILE):
