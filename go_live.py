@@ -77,20 +77,21 @@ def ensure_fifo(path):
 
 
 def video_writer(proc):
-    """Continuously feed the current board.png into ffmpeg's stdin as frames."""
+    """Continuously feed the current board.png into ffmpeg's stdin as frames,
+    until ffmpeg itself exits (e.g. after the test duration, or if streaming stops)."""
     frame_interval = 1.0 / FRAMERATE
-    while True:
+    while proc.poll() is None:
         try:
             with open(BOARD_IMAGE, "rb") as f:
                 data = f.read()
             proc.stdin.write(data)
             proc.stdin.flush()
         except (BrokenPipeError, FileNotFoundError):
-            time.sleep(frame_interval)
-            continue
+            break
         except Exception as e:
             print(f"[video_writer warn] {e}")
         time.sleep(frame_interval)
+    print("[go_live] ffmpeg process has exited, shutting down.")
 
 
 def decode_to_pcm(mp3_path):
@@ -144,7 +145,7 @@ def build_ffmpeg_command(stream_key):
 
     return [
         "ffmpeg",
-        "-hide_banner", "-loglevel", "warning",
+        "-y", "-hide_banner", "-loglevel", "warning",
 
         # Video: PNG frames coming from our stdin pipe
         "-f", "image2pipe", "-framerate", str(FRAMERATE), "-i", "pipe:0",
@@ -191,8 +192,10 @@ def main():
     # ffmpeg opens it for reading, so start it in a thread.
     threading.Thread(target=audio_writer, daemon=True).start()
 
-    # Feed video frames on the main thread
+    # Feed video frames on the main thread until ffmpeg exits on its own
     video_writer(proc)
+    proc.wait()
+    print("[go_live] Done. If TEST_MODE, check test_output.mp4 now.")
 
 
 if __name__ == "__main__":
