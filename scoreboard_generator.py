@@ -26,6 +26,7 @@ import json
 import os
 import re
 import random
+import math
 from PIL import Image, ImageDraw, ImageFont
 
 # ---------- CONFIG ----------
@@ -68,6 +69,8 @@ FONT_SUB = load_font(FONT_REGULAR, 17)
 FONT_AVATAR = load_font(FONT_ANTON, 30)
 FONT_BALL = load_font(FONT_ANTON, 18)
 FONT_PROMO = load_font(FONT_BEBAS, 22)
+FONT_STATUS = load_font(FONT_BEBAS, 27)      # bigger status-bar text (target/CRR/break status)
+FONT_YET_TO_BAT = load_font(FONT_BEBAS, 24)
 
 COLOR_ACCENT = (255, 196, 0)
 COLOR_LIVE_RED = (220, 40, 40)
@@ -202,6 +205,104 @@ def format_bowler_figures(bowler):
         figures = ""
     eco_text = f"ECO {economy}" if ok(economy) else ""
     return figures, eco_text
+
+# Caches the last-known score string for each team abbreviation, keyed to
+# the current match. This is needed because Cricbuzz's title usually only
+# reports the CURRENTLY-BATTING team's score - once the 2nd innings starts,
+# the 1st innings' final total drops out of the title entirely. Without a
+# cache we'd lose that score and have to show blanks for team 1.
+# _teams_seen_order tracks the ORDER abbreviations first showed up in the
+# live scores (most reliable source - it's the site's own scorecard code),
+# which we lean on for franchise/league matches whose team names (e.g.
+# "Galle Gallants") don't resolve via the country-name dictionary.
+_score_cache = {}
+_teams_seen_order = []
+_score_cache_match_id = None
+
+def _reset_score_cache_if_new_match(match_id):
+    global _score_cache, _teams_seen_order, _score_cache_match_id
+    if match_id != _score_cache_match_id:
+        _score_cache = {}
+        _teams_seen_order = []
+        _score_cache_match_id = match_id
+
+def _update_score_cache(all_scores):
+    for s in all_scores:
+        abbr = extract_team_abbr(s)
+        if abbr:
+            abbr = abbr.upper()
+            _score_cache[abbr] = s
+            if abbr not in _teams_seen_order:
+                _teams_seen_order.append(abbr)
+
+def _name_initials(name):
+    return "".join(w[0] for w in re.findall(r"[A-Za-z]+", name or "")).upper()
+
+def _abbr_name_similarity(abbr, name):
+    """Crude letter-overlap score between a scorecard abbreviation (e.g.
+    'GAG') and a team's word-initials (e.g. 'Galle Gallants' -> 'GG')."""
+    if not abbr or not name:
+        return -1
+    ini = _name_initials(name)
+    return sum(1 for ch in abbr.upper() if ch in ini)
+
+def build_score_slots(title, all_scores, match_id):
+    """Always returns exactly 2 slots: (label, score_text_or_None, color).
+    score_text is None when that team hasn't batted yet - the caller shows
+    'YET TO BAT' for those. Uses the cross-poll cache so a completed first
+    innings score keeps showing even once the site stops mentioning it.
+
+    IMPORTANT: slot order always follows the order teams actually appeared
+    in the live scores (= true batting order), NEVER the title's word order
+    ("Nepal vs Netherlands" does NOT necessarily mean Nepal batted first -
+    trusting title order here was a real bug)."""
+    _reset_score_cache_if_new_match(match_id)
+    _update_score_cache(all_scores)
+
+    (t1_abbr, t1_name), (t2_abbr, t2_name) = parse_teams_from_title(title)
+    known = list(_teams_seen_order)
+
+    if len(known) >= 2:
+        return [
+            (known[0], _score_cache.get(known[0]), team_color(known[0], 0)),
+            (known[1], _score_cache.get(known[1]), team_color(known[1], 1)),
+        ]
+
+    if len(known) == 1:
+        slot1_abbr = known[0]
+
+        def _matches_slot1(abbr):
+            return bool(abbr) and abbr.upper() == slot1_abbr
+
+        if _matches_slot1(t1_abbr):
+            remaining_abbr, remaining_name = t2_abbr, t2_name
+        elif _matches_slot1(t2_abbr):
+            remaining_abbr, remaining_name = t1_abbr, t1_name
+        elif t1_name and t2_name:
+            # Neither resolved directly (franchise/league names like "Galle
+            # Gallants") - use letter-overlap similarity to figure out
+            # which title-name is the team we ALREADY have a score for, so
+            # we label the OTHER one for the Yet To Bat slot.
+            if _abbr_name_similarity(slot1_abbr, t1_name) >= _abbr_name_similarity(slot1_abbr, t2_name):
+                remaining_abbr, remaining_name = t2_abbr, t2_name
+            else:
+                remaining_abbr, remaining_name = t1_abbr, t1_name
+        else:
+            remaining_abbr, remaining_name = (t2_abbr or t1_abbr), (t2_name or t1_name)
+
+        remaining_label = remaining_abbr or (_name_initials(remaining_name)[:4] if remaining_name else "") or "TBC"
+        return [
+            (slot1_abbr, _score_cache.get(slot1_abbr), team_color(slot1_abbr, 0)),
+            (remaining_label, None, team_color(remaining_abbr, 1)),
+        ]
+
+    # Nothing known yet at all (very first fetch ever, before either team
+    # has faced a ball) - show placeholders from the title's two team names.
+    # Order genuinely doesn't matter yet here since neither has batted.
+    return [
+        (t1_abbr or _name_initials(t1_name)[:4] or "-", None, team_color(t1_abbr, 0)),
+        (t2_abbr or _name_initials(t2_name)[:4] or "-", None, team_color(t2_abbr, 1)),
+    ]
 
 def get_current_match_id():
     """Reads match_id.txt fresh every time - change matches by editing this
@@ -413,11 +514,16 @@ def draw_avatar(img, cx, cy, radius, letter, color):
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     draw.text((cx - tw / 2, cy - th / 2 - bbox[1]), letter, font=FONT_AVATAR, fill=COLOR_TEXT)
 
-def draw_strike_dot(img, cx, cy, radius=9):
+def draw_strike_dot(img, cx, cy, radius=9, pulse=0.0):
     """Small glowing green dot marking the batsman currently on strike -
-    drawn at the bottom-right edge of their avatar circle."""
-    glow = smooth_circle_layer(radius + 4, (*COLOR_STRIKE_DOT, 90))
-    img.paste(glow, (cx - radius - 4, cy - radius - 4), glow)
+    drawn at the bottom-right edge of their avatar circle. `pulse` (0..1,
+    driven by wall-clock time in the main loop) makes the glow gently
+    breathe in and out across successive board.png regenerations."""
+    breathe = 0.5 + 0.5 * math.sin(2 * math.pi * pulse)  # 0..1
+    glow_r = radius + 3 + int(3 * breathe)
+    glow_alpha = int(70 + 50 * breathe)
+    glow = smooth_circle_layer(glow_r, (*COLOR_STRIKE_DOT, glow_alpha))
+    img.paste(glow, (cx - glow_r, cy - glow_r), glow)
     white_ring = smooth_circle_layer(radius + 2, (255, 255, 255))
     img.paste(white_ring, (cx - radius - 2, cy - radius - 2), white_ring)
     dot = smooth_circle_layer(radius, COLOR_STRIKE_DOT)
@@ -564,7 +670,50 @@ def draw_corner_accent(draw, x, y, size, color, corner="tl"):
 
 # ---------------- main render ----------------
 
-def render_board(state, ball_history):
+POPUP_COLORS = {"FOUR": (50, 130, 220), "SIX": (185, 70, 220), "WICKET": (220, 55, 55)}
+POPUP_LABELS = {"FOUR": "FOUR !", "SIX": "SIX !", "WICKET": "WICKET !"}
+
+def draw_event_popup(img, draw, popup, progress):
+    """Draws a big FOUR!/SIX!/WICKET! banner that pops in, holds, then
+    fades out across the popup's lifetime (progress goes 0->1). Because
+    go_live.py continuously re-reads board.png at ~2fps, regenerating this
+    file every ~0.3-0.5s with a slightly different `progress` value makes
+    it appear as a real animated pop-up in the actual live stream."""
+    if not popup or progress is None:
+        return
+    if progress < 0.15:
+        t = progress / 0.15
+        alpha = t
+        scale = 0.7 + 0.3 * t
+    elif progress > 0.75:
+        t = (progress - 0.75) / 0.25
+        alpha = max(0.0, 1 - t)
+        scale = 1.0
+    else:
+        alpha = 1.0
+        scale = 1.0
+
+    color = POPUP_COLORS.get(popup, COLOR_ACCENT)
+    label = POPUP_LABELS.get(popup, popup)
+
+    cx, cy = WIDTH // 2, 300
+    base_w, base_h = 360, 116
+    w, h = max(1, int(base_w * scale)), max(1, int(base_h * scale))
+
+    banner = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    bdraw = ImageDraw.Draw(banner)
+    bdraw.rounded_rectangle(
+        [(0, 0), (w - 1, h - 1)], radius=max(4, int(22 * scale)),
+        fill=(*color, int(235 * alpha)),
+        outline=(255, 255, 255, int(255 * alpha)), width=max(2, int(3 * scale)),
+    )
+    bbox = bdraw.textbbox((0, 0), label, font=FONT_SCORE)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    bdraw.text(((w - tw) / 2, (h - th) / 2 - bbox[1]), label, font=FONT_SCORE, fill=(255, 255, 255, int(255 * alpha)))
+
+    img.paste(banner, (cx - w // 2, cy - h // 2), banner)
+
+def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phase=0.0):
     base = build_stadium_background(WIDTH, HEIGHT)
 
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -574,6 +723,8 @@ def render_board(state, ball_history):
     score = (state.get("score") if state else None) or "--"
     all_scores = (state.get("all_scores") if state else None) or []
     target_info = (state.get("target_info") if state else None) or ""
+    match_status = (state.get("match_status") if state else None) or ""
+    match_result = (state.get("match_result") if state else None) or ""
     batsmen = (state.get("current_batsmen") if state else None) or []
     bowler = (state or {}).get("current_bowler") or {}
     bowler_name = bowler.get("name")
@@ -586,26 +737,34 @@ def render_board(state, ball_history):
     # Header strip
     odraw.rectangle([(0, 0), (WIDTH, 66)], fill=(4, 8, 14, 220))
     odraw.rectangle([(0, 64), (WIDTH, 68)], fill=(*COLOR_ACCENT, 255))
-    odraw.rounded_rectangle([(WIDTH - 116, 16), (WIDTH - 24, 50)], radius=8, fill=(*COLOR_LIVE_RED, 255))
+    badge_text = "RESULT" if match_result else "LIVE"
+    badge_color = (30, 150, 80) if match_result else COLOR_LIVE_RED
+    badge_w = 132 if match_result else 92
+    badge_x0 = WIDTH - 24 - badge_w
+    odraw.rounded_rectangle([(badge_x0, 16), (WIDTH - 24, 50)], radius=8, fill=(*badge_color, 255))
 
-    # Score panel(s) - clipped-corner shape with a diagonal gradient fill
+    # Score panels - ALWAYS 2, side by side: 1st innings + 2nd innings.
+    # If the 2nd team hasn't batted yet, that slot shows "YET TO BAT"
+    # instead of a score (see build_score_slots / _score_cache above).
     panel_y, panel_h = 80, 108
-    if len(all_scores) >= 2:
-        panel_w = (WIDTH - 24 * 3) // 2
-        score_positions = [(24, all_scores[0], team_color(extract_team_abbr(all_scores[0]), 0)),
-                            (24 * 2 + panel_w, all_scores[1], team_color(extract_team_abbr(all_scores[1]), 1))]
-    else:
-        panel_w = WIDTH - 48
-        score_positions = [(24, score, team_color(extract_team_abbr(score), 0))]
-    for px, s, c in score_positions:
+    panel_w = (WIDTH - 24 * 3) // 2
+    score_slots = build_score_slots(title, all_scores, get_current_match_id())
+    score_positions = [(24, score_slots[0]), (24 * 2 + panel_w, score_slots[1])]
+    for px, (abbr, s, c) in score_positions:
         pts = clipped_rect(px, panel_y, panel_w, panel_h, cut=28)
         darker = tuple(max(0, ch - 60) for ch in c)
-        paste_polygon_gradient(overlay, pts, tuple(min(255, ch + 25) for ch in c), darker, 225)
+        top_color = tuple(min(255, ch + 25) for ch in c)
+        # dim the panel slightly when the team hasn't batted yet, so the
+        # active innings visually stands out more
+        alpha = 225 if s else 165
+        paste_polygon_gradient(overlay, pts, top_color, darker, alpha)
         # (border intentionally removed)
 
-    # Status bar
+    # Status bar - shows (in priority order) an innings-break/stoppage
+    # status, then a target/chase line, then the current run rate. Text
+    # is bigger now (FONT_STATUS) so it reads clearly on a stream.
     status_y = panel_y + panel_h + 14
-    status_h = 34
+    status_h = 42
     odraw.rounded_rectangle([(24, status_y), (WIDTH - 24, status_y + status_h)], radius=8, fill=PANEL_FILL_DARK)
 
     # RECENT strip - FULL WIDTH - only drawn when there IS ball history yet.
@@ -675,28 +834,48 @@ def render_board(state, ball_history):
     draw_corner_accent(draw, 0, 0, 22, COLOR_ACCENT, "tl")
     draw_corner_accent(draw, WIDTH, 0, 22, (60, 80, 200), "tr")
     draw.text((24, 18), title[:66], font=FONT_TITLE, fill=COLOR_TEXT)
-    live_box = (WIDTH - 116, 16, WIDTH - 24, 50)
-    lbbox = draw.textbbox((0, 0), "LIVE", font=FONT_BADGE)
+    live_box = (badge_x0, 16, WIDTH - 24, 50)
+    lbbox = draw.textbbox((0, 0), badge_text, font=FONT_BADGE)
     ltw, lth = lbbox[2] - lbbox[0], lbbox[3] - lbbox[1]
     ltx = live_box[0] + ((live_box[2] - live_box[0]) - ltw) / 2
     lty = live_box[1] + ((live_box[3] - live_box[1]) - lth) / 2 - lbbox[1]
-    draw.text((ltx, lty), "LIVE", font=FONT_BADGE, fill=COLOR_TEXT)
+    draw.text((ltx, lty), badge_text, font=FONT_BADGE, fill=COLOR_TEXT)
 
-    for px, s, c in score_positions:
-        team = extract_team_abbr(s) or "-"
-        rest = s[len(team):].strip() if s else "-"
+    for px, (abbr, s, c) in score_positions:
+        team = abbr or "-"
         draw_flag_circle(composited, draw, px + panel_w - 44, panel_y + panel_h // 2, 26, team)
         draw.text((px + 16, panel_y + 12), team, font=FONT_TEAM, fill=COLOR_TEXT)
-        bbox = draw.textbbox((0, 0), rest or "-", font=FONT_SCORE)
-        text_h = bbox[3] - bbox[1]
-        score_y = panel_y + 40 + (panel_h - 40 - text_h) / 2 - bbox[1]
-        draw.text((px + 16, score_y), rest or "-", font=FONT_SCORE, fill=COLOR_TEXT)
+        if s:
+            rest = s[len(team):].strip() if team and s.upper().startswith(team.upper()) else s
+            bbox = draw.textbbox((0, 0), rest or "-", font=FONT_SCORE)
+            text_h = bbox[3] - bbox[1]
+            score_y = panel_y + 40 + (panel_h - 40 - text_h) / 2 - bbox[1]
+            draw.text((px + 16, score_y), rest or "-", font=FONT_SCORE, fill=COLOR_TEXT)
+        else:
+            yts_text = "YET TO BAT"
+            bbox = draw.textbbox((0, 0), yts_text, font=FONT_YET_TO_BAT)
+            text_h = bbox[3] - bbox[1]
+            score_y = panel_y + 40 + (panel_h - 40 - text_h) / 2 - bbox[1]
+            draw.text((px + 16, score_y), yts_text, font=FONT_YET_TO_BAT, fill=COLOR_SUBTEXT)
 
-    status_text = target_info
-    if not status_text:
+    # Priority: final result > innings-break/stoppage status > chase/target line > run rate.
+    if match_result:
+        status_text = match_result.upper()
+        status_color = COLOR_ACCENT
+    elif match_status:
+        status_text = match_status.upper()
+        status_color = COLOR_ACCENT
+    elif target_info:
+        status_text = target_info
+        status_color = COLOR_TEXT
+    else:
         crr = compute_run_rate(all_scores[0] if all_scores else score)
         status_text = f"CRR: {crr}" if crr is not None else "LIVE UPDATES"
-    draw.text((36, status_y + 6), status_text, font=FONT_SUB, fill=COLOR_ACCENT if not target_info else COLOR_TEXT)
+        status_color = COLOR_ACCENT
+    sbbox = draw.textbbox((0, 0), status_text, font=FONT_STATUS)
+    stext_h = sbbox[3] - sbbox[1]
+    stext_y = status_y + (status_h - stext_h) / 2 - sbbox[1]
+    draw.text((36, stext_y), status_text, font=FONT_STATUS, fill=status_color)
 
     # RECENT strip foreground content (only when there's history to show)
     if has_recent:
@@ -704,7 +883,7 @@ def render_board(state, ball_history):
         circle_r = 20
         start_x = WIDTH - 48
         cy = recent_y + recent_h // 2 + 4
-        for tag in reversed(ball_history[-14:]):
+        for tag in reversed(ball_history[-6:]):
             color = BALL_COLORS.get(tag, BALL_DEFAULT_COLOR)
             cx = start_x - circle_r
             white_bg = smooth_circle_layer(circle_r + 1, (255, 255, 255))
@@ -722,6 +901,8 @@ def render_board(state, ball_history):
     for i in range(2):
         b = batsmen[i] if i < len(batsmen) else {}
         name = b.get("name")
+        if name == "score not found":
+            name = None
         on_strike = bool(b.get("on_strike"))
         cx0 = card_x_positions[i]
         sr = compute_strike_rate(b.get("score"))
@@ -731,10 +912,15 @@ def render_board(state, ball_history):
         if on_strike:
             # small glowing dot at the bottom-right of the avatar marks
             # the batsman who is currently on strike
-            draw_strike_dot(composited, cx0 + 44 + 20, row_y + 68 + 20)
+            draw_strike_dot(composited, cx0 + 44 + 20, row_y + 68 + 20, pulse=pulse_phase)
         name_x = cx0 + 82
-        draw.text((name_x, row_y + 48), name or "-", font=FONT_NAME, fill=COLOR_TEXT)
-        draw.text((name_x, row_y + 82), b.get("score") or "-", font=FONT_STAT, fill=COLOR_ACCENT)
+        display_name = name or "New Batsman"
+        display_score = (b.get("score") or "") if name else ""
+        if display_score == "score not found":
+            display_score = ""
+        draw.text((name_x, row_y + 48), display_name, font=FONT_NAME, fill=COLOR_TEXT if name else COLOR_SUBTEXT)
+        if display_score:
+            draw.text((name_x, row_y + 82), display_score, font=FONT_STAT, fill=COLOR_ACCENT)
         sr_text = f"SR: {sr}" if sr is not None else ""
         if sr_text:
             draw.text((cx0 + 16, row_y + row_h - 24), sr_text, font=FONT_SUB, fill=COLOR_SUBTEXT)
@@ -750,8 +936,8 @@ def render_board(state, ball_history):
         draw.text((bowler_x + 16, row_y + row_h - 24), bowler_eco, font=FONT_SUB, fill=COLOR_SUBTEXT)
 
     if have_thumb and custom_thumb_img is None:
-        team1 = extract_team_abbr(score_positions[0][1]) if score_positions else None
-        team2 = extract_team_abbr(score_positions[1][1]) if len(score_positions) > 1 else None
+        team1 = score_positions[0][1][0] if score_positions else None
+        team2 = score_positions[1][1][0] if len(score_positions) > 1 else None
         team1_label, team2_label = team1, team2
         if not team2:
             (t1_abbr, t1_name), (t2_abbr, t2_name) = parse_teams_from_title(title)
@@ -778,19 +964,70 @@ def render_board(state, ball_history):
     draw.text(((WIDTH - tw) / 2, HEIGHT - 74 + (40 - 24) / 2), CHANNEL_TAGLINE, font=FONT_PROMO, fill=COLOR_ACCENT)
     draw.text((24, HEIGHT - 27), "Auto-generated live scoreboard - not affiliated with any official broadcaster", font=FONT_SUB, fill=COLOR_SUBTEXT)
 
+    draw_event_popup(composited, draw, popup, popup_progress)
+
     return composited
+
+RENDER_INTERVAL_SECONDS = 0.4     # how often board.png is rewritten (go_live.py reads it continuously at ~2fps, so frequent small changes here become real animation in the stream)
+EVENT_POPUP_SECONDS = 2.2         # how long the FOUR!/SIX!/WICKET! banner stays on screen
+PULSE_PERIOD_SECONDS = 3.0        # how long one "breathe" cycle of the striker-dot glow takes
 
 def main():
     print(f"Starting scoreboard generator (reads {MATCH_ID_FILE} live, currently: {get_current_match_id()})")
+    state = None
+    history = []
+    last_data_fetch = 0.0
+    popup_type = None
+    popup_start = 0.0
+
     while True:
-        state = fetch_state()
-        if state and state.get("score") == "score not found":
-            state = None
-        history = fetch_ball_history()
-        img = render_board(state, history)
-        img.save(OUTPUT_IMAGE)
-        print(f"[updated] {OUTPUT_IMAGE}")
-        time.sleep(POLL_INTERVAL_SECONDS)
+        now = time.time()
+
+        if now - last_data_fetch >= POLL_INTERVAL_SECONDS:
+            new_state = fetch_state()
+            if new_state and new_state.get("score") == "score not found":
+                new_state = None
+
+            # Prefer recent_balls straight from the API (Cricbuzz's own
+            # ground-truth "Recent" widget - includes dot balls correctly,
+            # unlike the old score-snapshot-diff approach). Falls back to
+            # the legacy ball_history.json only if the API doesn't have it.
+            new_history = (new_state.get("recent_balls") if new_state else None)
+            if not new_history:
+                new_history = fetch_ball_history()
+
+            # Detect brand-new ball(s) since the last poll, to trigger the
+            # FOUR!/SIX!/WICKET! popup animation. Skipped on the very first
+            # fetch (nothing to compare against yet) and safely handles a
+            # shorter list (new match/innings) by treating everything as new.
+            if history:
+                new_tags = new_history[len(history):] if len(new_history) >= len(history) else new_history
+            else:
+                new_tags = []  # don't fire a popup on process startup
+            for tag in new_tags:
+                if tag in ("4", "6", "W"):
+                    popup_type = {"4": "FOUR", "6": "SIX", "W": "WICKET"}[tag]
+                    popup_start = now
+
+            state = new_state
+            history = new_history
+            last_data_fetch = now
+            print(f"[data] refreshed (next in {POLL_INTERVAL_SECONDS}s)")
+
+        popup_progress = None
+        if popup_type:
+            elapsed = now - popup_start
+            if elapsed > EVENT_POPUP_SECONDS:
+                popup_type = None
+            else:
+                popup_progress = elapsed / EVENT_POPUP_SECONDS
+
+        pulse_phase = (now % PULSE_PERIOD_SECONDS) / PULSE_PERIOD_SECONDS
+
+        img = render_board(state, history, popup=popup_type, popup_progress=popup_progress or 0.0, pulse_phase=pulse_phase)
+        img.save(OUTPUT_IMAGE + ".tmp", format="PNG")
+        os.replace(OUTPUT_IMAGE + ".tmp", OUTPUT_IMAGE)
+        time.sleep(RENDER_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
     main()

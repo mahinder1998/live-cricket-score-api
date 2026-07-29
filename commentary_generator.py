@@ -99,6 +99,21 @@ OVER_LINES = [
     "ओवर खत्म हुआ। स्कोर है {score}।",
     "यह ओवर समाप्त, कुल स्कोर {score}।",
 ]
+# Genuine dot balls (runs stayed same, but the striker's balls-faced count
+# went up by 1) - kept short/occasional so it doesn't get repetitive when
+# there's a run of them in a row.
+DOT_BALL_LINES = [
+    "डॉट बॉल, कोई रन नहीं।",
+    "अच्छी गेंद, बल्लेबाज़ रन नहीं बना सके।",
+    "रन रेट पर थोड़ा दबाव, यह गेंद डॉट रही।",
+]
+# Spoken once the match_result field appears (see app.py) - announced with
+# top priority, ahead of any other commentary for that poll.
+RESULT_LINES = [
+    "मैच खत्म! {result}।",
+    "यह रहा नतीजा - {result}।",
+    "और इसी के साथ मैच का अंत, {result}।",
+]
 
 RUN_LINE_MAP = {
     1: ONE_RUN_LINES,
@@ -129,6 +144,15 @@ def append_ball_event(tag):
 
 def get_batsman_runs(batsman):
     match = re.match(r"(\d+)", batsman.get("score", "") or "")
+    return int(match.group(1)) if match else None
+
+def get_batsman_balls(batsman):
+    """Extracts the 'B' (balls faced) from a 'R(B)' score string like
+    '14(25)'. Balls faced increments on every LEGAL delivery (dot balls
+    included) even when runs don't change - that's the one signal our
+    snapshot polling has to actually notice a dot ball happened, instead
+    of just silently skipping it."""
+    match = re.search(r"\((\d+)\)", batsman.get("score", "") or "")
     return int(match.group(1)) if match else None
 
 def get_team_runs(score_str):
@@ -167,8 +191,19 @@ def generate_commentary(prev, curr):
     if not prev:
         return lines
 
+    # --- Match result: highest priority. Once this appears, announce it
+    # and stop - the batsmen/bowler data may reset to placeholders right
+    # as the match ends, which would otherwise misfire as a fake "wicket". --
+    curr_result = (curr.get("match_result") or "").strip()
+    prev_result = (prev.get("match_result") or "").strip()
+    if curr_result and curr_result != prev_result:
+        lines.append(random.choice(RESULT_LINES).format(result=curr_result))
+        return lines
+
     curr_batsmen = {b["name"]: get_batsman_runs(b) for b in curr.get("current_batsmen", [])}
     prev_batsmen = {b["name"]: get_batsman_runs(b) for b in prev.get("current_batsmen", [])}
+    curr_batsmen_balls = {b["name"]: get_batsman_balls(b) for b in curr.get("current_batsmen", [])}
+    prev_batsmen_balls = {b["name"]: get_batsman_balls(b) for b in prev.get("current_batsmen", [])}
 
     curr_bowler = (curr.get("current_bowler") or {}).get("name")
 
@@ -195,18 +230,45 @@ def generate_commentary(prev, curr):
                     lines.append(f"{name} ने {diff} रन जोड़े।")
                     append_ball_event(str(diff))
 
+    # --- Genuine dot ball(s): runs unchanged for a batsman, but their
+    # BALLS FACED count went up - that only happens on a legal delivery,
+    # so it's the one reliable signal we have that a dot ball actually
+    # happened (rather than just no new poll data yet). If the gap covers
+    # more than one dot ball, log all of them so the RECENT strip stays
+    # accurate, but only *speak* about it some of the time so it doesn't
+    # get repetitive during a quiet spell. ---
+    dot_ball_count = 0
+    if not wicket_happened and not explained_batsman_runs:
+        for name, curr_balls in curr_batsmen_balls.items():
+            if (name in prev_batsmen_balls and curr_balls is not None
+                    and prev_batsmen_balls[name] is not None):
+                balls_diff = curr_balls - prev_batsmen_balls[name]
+                runs_diff = 0
+                if (name in curr_batsmen and name in prev_batsmen
+                        and curr_batsmen[name] is not None and prev_batsmen[name] is not None):
+                    runs_diff = curr_batsmen[name] - prev_batsmen[name]
+                if balls_diff and balls_diff > 0 and runs_diff == 0:
+                    dot_ball_count = balls_diff
+                    break
+
+    if dot_ball_count:
+        for _ in range(dot_ball_count):
+            append_ball_event("0")
+        if random.random() < 0.35:
+            lines.append(random.choice(DOT_BALL_LINES))
+
     # --- Extras: team total rose but no batsman's score explains it ---
     curr_team_runs = get_team_runs(curr.get("score"))
     prev_team_runs = get_team_runs(prev.get("score"))
     if (curr_team_runs is not None and prev_team_runs is not None
-            and not wicket_happened and not explained_batsman_runs):
+            and not wicket_happened and not explained_batsman_runs and not dot_ball_count):
         team_diff = curr_team_runs - prev_team_runs
         if team_diff > 0:
             lines.append(random.choice(EXTRA_RUN_LINES))
             append_ball_event("+" + str(team_diff))
 
     # --- Fallback: over/score update line if nothing else was said ---
-    if curr.get("score") != prev.get("score") and not lines:
+    if curr.get("score") != prev.get("score") and not lines and not dot_ball_count:
         lines.append(random.choice(OVER_LINES).format(score=curr.get("score")))
 
     return lines
