@@ -1,9 +1,17 @@
 """
-Scoreboard Generator - Phase 4 (v7 - striker dot, full bowler figures, auto-hide RECENT)
+Scoreboard Generator - Phase 4 (v8 - striker dot, full bowler figures, auto-hide RECENT,
+live Hindi commentary ticker)
 -------------------------------------------------------------------
 Requires the UPDATED app.py (with on_strike + overs/maidens/runs/wickets/economy fields).
 
-Changes in this version:
+Changes in this version (v8):
+    - NEW: reads commentary_feed.json (written by commentary_generator.py)
+      and shows the latest Hindi commentary line as a ticker in the promo
+      banner area for a few seconds, then falls back to the channel
+      tagline until the next line arrives. Purely additive - if the feed
+      file is missing/empty, behaviour is identical to before.
+
+Changes from v7:
     - Striker indicator: a small glowing dot is drawn on the batter card of
       whichever batsman has on_strike=True (from the API), instead of
       relying on a raw "*" in the name text.
@@ -36,6 +44,8 @@ MATCH_ID_FILE = "match_id.txt"   # <-- EDIT THIS FILE ON THE VPS to change match
 POLL_INTERVAL_SECONDS = 10
 OUTPUT_IMAGE = "board.png"
 BALL_HISTORY_FILE = "ball_history.json"
+COMMENTARY_FEED_FILE = "commentary_feed.json"   # written by commentary_generator.py
+COMMENTARY_DISPLAY_SECONDS = 6   # how long a fresh commentary line replaces the tagline
 WIDTH, HEIGHT = 1280, 720
 CHANNEL_TAGLINE = "LIVE HINDI COMMENTARY  \u2022  SUBSCRIBE FOR MORE"
 STADIUM_BG_PATH = "assets/stadium_background.jpg"  # real, freely-licensed Unsplash photo
@@ -71,6 +81,12 @@ FONT_BALL = load_font(FONT_ANTON, 22)
 FONT_PROMO = load_font(FONT_BEBAS, 26)
 FONT_STATUS = load_font(FONT_BEBAS, 32)      # bigger status-bar text (target/CRR/break status)
 FONT_YET_TO_BAT = load_font(FONT_BEBAS, 30)
+# Hindi commentary needs a font with Devanagari glyph support - DejaVu Sans
+# does NOT cover Devanagari, so the ticker uses a Noto Sans Devanagari font
+# if present (falls back gracefully to DejaVu/default, which will just show
+# boxes for Hindi text if that font truly isn't installed - see notes below).
+FONT_DEVANAGARI_PATH = "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"
+FONT_COMMENTARY = load_font(FONT_DEVANAGARI_PATH, 24)
 
 COLOR_ACCENT = (255, 196, 0)
 COLOR_LIVE_RED = (220, 40, 40)
@@ -335,6 +351,48 @@ def fetch_ball_history():
             return json.load(f)
     except Exception:
         return []
+
+def fetch_latest_commentary():
+    """Reads the latest Hindi commentary line written by
+    commentary_generator.py (commentary_feed.json), if it's still
+    "fresh" (younger than COMMENTARY_DISPLAY_SECONDS). Returns None if the
+    feed file is missing, empty, unreadable, or the latest line has aged
+    out - in which case the caller falls back to the normal tagline."""
+    if not os.path.exists(COMMENTARY_FEED_FILE):
+        return None
+    try:
+        with open(COMMENTARY_FEED_FILE, encoding="utf-8") as f:
+            entries = json.load(f)
+        if not entries:
+            return None
+        latest = entries[-1]
+        age = time.time() - latest.get("ts", 0)
+        if age <= COMMENTARY_DISPLAY_SECONDS:
+            return latest.get("text")
+    except Exception:
+        return None
+    return None
+
+def fit_text_to_width(draw, text, font, max_width):
+    """Truncates text with a trailing '...' if it's wider than max_width,
+    so a long Hindi commentary line never overflows/collides with the
+    footer text next to it."""
+    if not text:
+        return text
+    bbox = draw.textbbox((0, 0), text, font=font)
+    if bbox[2] - bbox[0] <= max_width:
+        return text
+    ellipsis = "..."
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        candidate = text[:mid].rstrip() + ellipsis
+        cbbox = draw.textbbox((0, 0), candidate, font=font)
+        if cbbox[2] - cbbox[0] <= max_width:
+            lo = mid + 1
+        else:
+            hi = mid
+    return text[:max(lo - 1, 1)].rstrip() + ellipsis
 
 # ---------------- full-frame stadium background (self-drawn, not a photo) ----------------
 
@@ -964,9 +1022,30 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
         ctw = cbbox[2] - cbbox[0]
         draw.text((thumb_x + thumb_w / 2 - ctw / 2, thumb_y + thumb_h - 24), cap_text, font=FONT_SUB, fill=COLOR_SUBTEXT)
 
-    bbox = draw.textbbox((0, 0), CHANNEL_TAGLINE, font=FONT_PROMO)
-    tw = bbox[2] - bbox[0]
-    draw.text(((WIDTH - tw) / 2, HEIGHT - 74 + (40 - 24) / 2), CHANNEL_TAGLINE, font=FONT_PROMO, fill=COLOR_ACCENT)
+    # ---- Promo banner: shows a fresh Hindi commentary line (if one just
+    # came in from commentary_generator.py) instead of the channel tagline,
+    # for COMMENTARY_DISPLAY_SECONDS - then falls back to the tagline. This
+    # gives viewers a readable caption of what's being said in the audio,
+    # without adding a whole new panel to an already-full 720p layout. ----
+    latest_commentary = fetch_latest_commentary()
+    promo_max_w = WIDTH - 48
+    if latest_commentary:
+        promo_text = fit_text_to_width(draw, latest_commentary, FONT_COMMENTARY, promo_max_w)
+        promo_font = FONT_COMMENTARY
+        promo_color = COLOR_TEXT
+        cc_w, cc_h = draw_ribbon_tag(draw, 24, HEIGHT - 74 + 6, "COMMENTARY", FONT_LABEL, (*COLOR_ACCENT, 255), text_color=(20, 20, 20))
+        text_x = 24 + cc_w + 12
+        bbox = draw.textbbox((0, 0), promo_text, font=promo_font)
+        text_h = bbox[3] - bbox[1]
+        text_y = HEIGHT - 74 + (40 - text_h) / 2 - bbox[1]
+        remaining_w = WIDTH - text_x - 16
+        promo_text = fit_text_to_width(draw, latest_commentary, promo_font, remaining_w)
+        draw.text((text_x, text_y), promo_text, font=promo_font, fill=promo_color)
+    else:
+        bbox = draw.textbbox((0, 0), CHANNEL_TAGLINE, font=FONT_PROMO)
+        tw = bbox[2] - bbox[0]
+        draw.text(((WIDTH - tw) / 2, HEIGHT - 74 + (40 - 24) / 2), CHANNEL_TAGLINE, font=FONT_PROMO, fill=COLOR_ACCENT)
+
     draw.text((24, HEIGHT - 27), "Auto-generated live scoreboard - not affiliated with any official broadcaster", font=FONT_SUB, fill=COLOR_SUBTEXT)
 
     draw_event_popup(composited, draw, popup, popup_progress)
@@ -1036,4 +1115,4 @@ def main():
         time.sleep(RENDER_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    main() 
+    main()

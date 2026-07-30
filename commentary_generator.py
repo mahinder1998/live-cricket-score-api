@@ -36,6 +36,7 @@ import time
 import random
 import re
 import os
+import json
 import asyncio
 import edge_tts
 
@@ -48,6 +49,8 @@ VOICE = "hi-IN-MadhurNeural"    # try "hi-IN-SwaraNeural" for a female voice
 VOICE_RATE = "+0%"           # natural pace - faster rates start to sound rushed/robotic
 VOICE_PITCH = "+0Hz"
 AUDIO_DIR = "audio_queue"
+COMMENTARY_FEED_FILE = "commentary_feed.json"  # <-- scoreboard_generator.py reads this to show a live text ticker
+COMMENTARY_FEED_MAX = 20        # how many recent lines to keep in the feed file
 # -----------------------------
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -342,6 +345,29 @@ async def text_to_speech_atomic(text, final_path):
     await text_to_speech(text, tmp_path)
     os.rename(tmp_path, final_path)
 
+def append_commentary_feed(text):
+    """Appends this commentary line (with a timestamp) to a small shared
+    JSON file that scoreboard_generator.py polls, so the SAME Hindi line
+    that's being spoken can also show up as an on-screen ticker caption.
+    Written atomically (tmp file + rename) for the same reason the audio
+    files are - so the scoreboard never reads a half-written file."""
+    entries = []
+    if os.path.exists(COMMENTARY_FEED_FILE):
+        try:
+            with open(COMMENTARY_FEED_FILE, encoding="utf-8") as f:
+                entries = json.load(f)
+        except Exception:
+            entries = []
+    entries.append({"text": text, "ts": time.time()})
+    entries = entries[-COMMENTARY_FEED_MAX:]
+    tmp_path = COMMENTARY_FEED_FILE + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False)
+        os.replace(tmp_path, COMMENTARY_FEED_FILE)
+    except Exception as e:
+        print(f"   [warn] could not write commentary feed: {e}", flush=True)
+
 def main():
     print(f"Starting Hindi commentary generator (reads {MATCH_ID_FILE} live, currently: {get_current_match_id()})", flush=True)
     prev_state = None
@@ -356,6 +382,7 @@ def main():
             new_lines = generate_commentary(prev_state, curr_state)
             for line in new_lines:
                 print(f">> {line}", flush=True)
+                append_commentary_feed(line)
                 filename = os.path.join(AUDIO_DIR, f"{clip_number:04d}.mp3")
                 try:
                     asyncio.run(text_to_speech_atomic(line, filename))
