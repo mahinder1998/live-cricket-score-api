@@ -52,6 +52,17 @@ VIDEO_WIDTH, VIDEO_HEIGHT = 1280, 720
 FRAMERATE = 2          # scoreboard doesn't need to be smooth, 2fps is plenty
 AUDIO_SAMPLE_RATE = 24000
 SPEECH_FIFO = "/tmp/speech_audio.fifo"
+
+# --- Bitrate tuned DOWN to match this VPS's actual observed upload capacity
+# (YouTube reported the stream only sustaining ~1400 Kbps, well below the
+# old 4000k target - that mismatch is what was causing "Poor"/buffering).
+# Kept comfortably under that ceiling, with a faster encode preset so CPU
+# isn't a bottleneck either.
+VIDEO_BITRATE = "900k"
+VIDEO_MAXRATE = "1100k"
+VIDEO_BUFSIZE = "2200k"
+AUDIO_BITRATE = "96k"
+X264_PRESET = "veryfast"
 # -----------------------------
 
 os.makedirs(AUDIO_PLAYED_DIR, exist_ok=True)
@@ -162,9 +173,10 @@ def build_ffmpeg_command(stream_key):
 
         "-map", "0:v", "-map", "[aout]",
 
-        "-c:v", "libx264", "-preset", "medium", "-b:v", "4000k", "-maxrate", "4500k", "-bufsize", "8000k",
+        "-c:v", "libx264", "-preset", X264_PRESET, "-b:v", VIDEO_BITRATE,
+        "-maxrate", VIDEO_MAXRATE, "-bufsize", VIDEO_BUFSIZE,
         "-pix_fmt", "yuv420p", "-g", str(FRAMERATE * 2),
-        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+        "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", "44100",
     ] + output_args
 
 
