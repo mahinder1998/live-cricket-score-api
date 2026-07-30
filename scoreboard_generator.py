@@ -713,8 +713,13 @@ def draw_event_popup(img, draw, popup, progress):
 
     img.paste(banner, (cx - w // 2, cy - h // 2), banner)
 
+_cached_stadium_bg = None
+
 def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phase=0.0):
-    base = build_stadium_background(WIDTH, HEIGHT)
+    global _cached_stadium_bg
+    if _cached_stadium_bg is None:
+        _cached_stadium_bg = build_stadium_background(WIDTH, HEIGHT)
+    base = _cached_stadium_bg
 
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     odraw = ImageDraw.Draw(overlay)
