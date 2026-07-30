@@ -463,9 +463,8 @@ class ScoreService:
         # (57 -> "9.3") so CRR/over-end-completion logic elsewhere - which
         # all assume the traditional notation - keeps working unchanged.
         for team, runs, wickets, num_str, is_balls in re.findall(
-            r"([A-Z]{2,4})\s+(\d+)(?:\s*[/\-]\s*(\d+))?\s*\(\s*([\d.]+)\s*(Balls?)?\s*\)",
+            r"\b([A-Z]{2,4})\s+(\d+)(?:\s*[/\-]\s*(\d+))?\s*\(\s*([\d.]+)\s*((?i:Balls?))?\s*\)",
             region,
-            re.IGNORECASE,
         ):
             key = team.upper()
             if key in seen:
@@ -526,7 +525,7 @@ class ScoreService:
             all_scores = cls._parse_all_scores_from_page(page_text, title)
             if not all_scores:
                 for team, runs, wickets, overs in re.findall(
-                    r"([A-Z]{2,4})\s+(\d+)/(\d+)\s*\(([\d.]+)\)",
+                    r"\b([A-Z]{2,4})\s+(\d+)/(\d+)\s*\(([\d.]+)\)",
                     og_title
                 ):
                     all_scores.append(f"{team} {runs}/{wickets} ({overs})")
