@@ -176,6 +176,30 @@ RUN_LINE_MAP = {
     6: SIX_LINES,
 }
 
+def classify_ball_tag(tag):
+    """Identifies what a recent_balls tag represents, tolerating an
+    embedded run count on either side (e.g. 'Wd1', '1Wd', '4Nb') - so a
+    wide/no-ball with an extra run attached is NEVER mistaken for a plain
+    run or (critically) for a wicket. A bare 'W' - no digits, no letters
+    attached - is the ONLY thing treated as an actual wicket."""
+    if tag == "W":
+        return "wicket"
+    if re.fullmatch(r"\d*wd\d*", tag, re.IGNORECASE):
+        return "wide"
+    if re.fullmatch(r"\d*nb\d*", tag, re.IGNORECASE):
+        return "noball"
+    if re.fullmatch(r"\d*lb\d*", tag, re.IGNORECASE):
+        return "legbye"
+    if re.fullmatch(r"\d*b\d*", tag, re.IGNORECASE):
+        return "bye"
+    if tag == "0":
+        return "dot"
+    if tag.isdigit():
+        return "runs"
+    if tag.startswith("+"):
+        return "extra"
+    return "unknown"
+
 def get_batsman_runs(batsman):
     match = re.match(r"(\d+)", batsman.get("score", "") or "")
     return int(match.group(1)) if match else None
@@ -288,7 +312,9 @@ def generate_commentary(prev, curr):
         new_tags = curr_recent[-1:]
 
     for tag in new_tags:
-        if tag == "W":
+        kind = classify_ball_tag(tag)
+
+        if kind == "wicket":
             if curr_bowler and curr_bowler != "score not found":
                 dismissed_name, dismissed_runs = find_dismissed_batsman(
                     prev.get("current_batsmen"), curr.get("current_batsmen")
@@ -301,9 +327,9 @@ def generate_commentary(prev, curr):
                     ))
                 else:
                     lines.append(random.choice(WICKET_LINES).format(bowler=curr_bowler))
-        elif tag == "0":
+        elif kind == "dot":
             lines.append(random.choice(DOT_BALL_LINES))
-        elif tag.lstrip("+").isdigit() and not tag.startswith("+"):
+        elif kind == "runs":
             diff = int(tag)
             templates = RUN_LINE_MAP.get(diff)
             if templates:
@@ -311,13 +337,11 @@ def generate_commentary(prev, curr):
             else:
                 # unusual run value (5, 7+) - still report it honestly
                 lines.append(f"{striker_name} ने {diff} रन जोड़े।")
-        elif tag.startswith("+"):
-            lines.append(random.choice(EXTRA_RUN_LINES))
-        elif tag == "Wd":
+        elif kind == "wide":
             lines.append(random.choice(WIDE_LINES))
-        elif tag == "Nb":
+        elif kind == "noball":
             lines.append(random.choice(NO_BALL_LINES))
-        elif tag in ("Lb", "B"):
+        elif kind in ("legbye", "bye", "extra"):
             lines.append(random.choice(EXTRA_RUN_LINES))
         # any other/unrecognised tag: skip silently rather than guessing
 
@@ -395,7 +419,7 @@ def main():
     while True:
         curr_state = fetch_state()
 
-        if curr_state and curr_state.get("score") == "score not found":
+        if curr_state and curr_state.get("score") == "score not found" and not curr_state.get("match_result"):
             print("[info] Match abhi live nahi hai. Wait kar rahe hain...", flush=True)
         elif curr_state:
             new_lines = generate_commentary(prev_state, curr_state)
