@@ -351,6 +351,50 @@ class ScoreService:
         )
 
     @classmethod
+    def _parse_bowler_from_table_hundred(cls, page_text: str) -> Optional[Bowler]:
+        """The Hundred competition renders a DIFFERENT bowler table -
+        'Bowler B D R W RPB' (Balls, Dots, Runs, Wickets, Runs-Per-Ball) -
+        instead of the usual over-based 'O M R W ECO', because The Hundred
+        counts in raw balls rather than 6-ball overs. This converts the
+        ball count into standard 'overs.balls' notation and RPB into an
+        equivalent economy rate (RPB * 6), so nothing downstream
+        (scoreboard/commentary) needs to know this alternate format
+        exists at all - it just sees a normal-looking Bowler either way."""
+        section = re.search(
+            r"Bowler\s+B\s+D\s+R\s+W\s+RPB(.*?)(?:Have Your Say|Key Stats|Recent\s*:|$)",
+            page_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not section:
+            return None
+
+        rows = list(re.finditer(
+            rf"({NAME_CHARS})(\s*\*)?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)",
+            section.group(1),
+        ))
+        if not rows:
+            return None
+
+        chosen = next((r for r in rows if r.group(2)), rows[0])
+        name, _star, balls_str, dots, runs, wickets, rpb = chosen.groups()
+
+        balls = int(balls_str)
+        overs_notation = f"{balls // 6}.{balls % 6}"
+        try:
+            economy = f"{float(rpb) * 6:.2f}"
+        except ValueError:
+            economy = NOT_FOUND
+
+        return Bowler(
+            name=cls.clean(name),
+            overs=overs_notation,
+            maidens=dots,  # closest available stat (dot balls) - The Hundred has no true maiden-over concept
+            runs=runs,
+            wickets=wickets,
+            economy=economy,
+        )
+
+    @classmethod
     def _parse_bowler_name_only(cls, page_text: str) -> str:
         """Last-resort fallback: just get a bowler name if the full table
         couldn't be parsed for some reason."""
@@ -410,16 +454,30 @@ class ScoreService:
         # up anywhere. The wickets group below is now OPTIONAL; when it's
         # missing we default to 10 (all out is the only time Cricbuzz omits
         # it in this summary format).
-        for team, runs, wickets, overs in re.findall(
-            r"([A-Z]{2,4})\s+(\d+)(?:\s*[/\-]\s*(\d+))?\s*\(\s*([\d.]+)\s*\)",
+        #
+        # ANOTHER BUG FIX: The Hundred competition shows "(57 Balls)"
+        # instead of the usual decimal-overs "(9.5)" notation, since The
+        # Hundred counts in raw balls, not 6-ball overs. The pattern below
+        # now accepts an optional trailing "Balls" word, and when present
+        # we convert the ball count into standard "overs.balls" notation
+        # (57 -> "9.3") so CRR/over-end-completion logic elsewhere - which
+        # all assume the traditional notation - keeps working unchanged.
+        for team, runs, wickets, num_str, is_balls in re.findall(
+            r"([A-Z]{2,4})\s+(\d+)(?:\s*[/\-]\s*(\d+))?\s*\(\s*([\d.]+)\s*(Balls?)?\s*\)",
             region,
+            re.IGNORECASE,
         ):
             key = team.upper()
             if key in seen:
                 continue
             seen.add(key)
             wk = wickets if wickets else "10"
-            scores.append(f"{team} {runs}/{wk} ({overs})")
+            if is_balls:
+                balls_count = int(float(num_str))
+                overs_str = f"{balls_count // 6}.{balls_count % 6}"
+            else:
+                overs_str = num_str
+            scores.append(f"{team} {runs}/{wk} ({overs_str})")
 
         return scores
 
@@ -490,8 +548,11 @@ class ScoreService:
                 batsmen = cls.default_batsmen()
 
             # ---- Bowler: prefer the live scorecard table (gives full
-            # O/M/R/W/ECO), fall back to name-only if that fails ----
+            # O/M/R/W/ECO), then try The Hundred's alternate B/D/R/W/RPB
+            # table format, and finally fall back to name-only ----
             bowler = cls._parse_bowler_from_table(page_text)
+            if bowler is None:
+                bowler = cls._parse_bowler_from_table_hundred(page_text)
             if bowler is None:
                 bowler = Bowler(name=cls._parse_bowler_name_only(page_text))
 
