@@ -110,3 +110,5 @@ venv.bak/
 *.mp3
 board.png
 match_id.txt
+*.tmp
+.board.png.tmp
