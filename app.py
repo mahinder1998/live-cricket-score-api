@@ -737,4 +737,4 @@ async def global_error_handler(request: Request, exc: Exception):
             "code": 500,
             "message": "internal server error"
         }
-    )
+    )   
