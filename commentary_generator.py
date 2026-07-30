@@ -36,7 +36,6 @@ import time
 import random
 import re
 import os
-import json
 import asyncio
 import edge_tts
 
@@ -49,8 +48,6 @@ VOICE = "hi-IN-MadhurNeural"    # try "hi-IN-SwaraNeural" for a female voice
 VOICE_RATE = "+0%"           # natural pace - faster rates start to sound rushed/robotic
 VOICE_PITCH = "+0Hz"
 AUDIO_DIR = "audio_queue"
-BALL_HISTORY_FILE = "ball_history.json"
-MAX_BALL_HISTORY = 12
 # -----------------------------
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -106,6 +103,16 @@ WICKET_LINES = [
     "यही चाहिए था टीम को! {bowler} ने ब्रेकथ्रू दिला दिया।",
     "क्या गेंद थी! {bowler} ने बल्लेबाज़ को छका दिया।",
 ]
+# Preferred wicket lines - used when we can identify WHO got out and their
+# score, so the commentary names the batsman + runs + bowler, not just the
+# bowler alone.
+WICKET_LINES_FULL = [
+    "आउट! {batsman} {runs} रन बनाकर पवेलियन लौटे, गेंदबाज़ {bowler}।",
+    "बड़ा विकेट! {bowler} ने {batsman} को {runs} रन पर आउट किया।",
+    "गया विकेट! {batsman} की पारी {runs} रन पर खत्म, श्रेय {bowler} को।",
+    "{bowler} की जबरदस्त गेंद, {batsman} {runs} रन बनाकर चलते बने।",
+    "विकेट गिर गया! {batsman} {runs} रन पर आउट, {bowler} ने तोड़ी साझेदारी।",
+]
 # Deliberately generic - we genuinely cannot tell wide/no-ball/bye apart
 # from this data source, so we don't pretend to.
 EXTRA_RUN_LINES = [
@@ -114,17 +121,17 @@ EXTRA_RUN_LINES = [
     "कुछ अतिरिक्त रन टीम के खाते में जुड़ गए।",
 ]
 OVER_LINES = [
-    "ओवर खत्म हुआ। स्कोर है {score}।",
-    "यह ओवर समाप्त, कुल स्कोर {score}।",
+    "स्कोर अभी है {runs} रन, {wickets} विकेट।",
+    "अपडेटेड स्कोर - {runs} रन पर {wickets} विकेट।",
 ]
 # Spoken specifically when an over completes (overs count ticks over to the
 # next whole number) - explicitly calls out the score AND wickets down, as
 # requested, separate from the generic OVER_LINES fallback above.
 OVER_END_LINES = [
-    "ओवर खत्म! स्कोर है {score}, {wickets} विकेट गिर चुके हैं।",
-    "और यह रहा ओवर का अंत - {score}, {wickets} विकेट पर।",
-    "छह गेंदें पूरी हुईं। स्कोरबोर्ड कहता है {score}, {wickets} विकेट।",
-    "उस ओवर का समापन, टीम अभी {score} पर खड़ी है, {wickets} विकेट गंवाकर।",
+    "{runs} रन पर {wickets} विकेट, {overs} ओवर पूरे हुए।",
+    "यह ओवर खत्म - {runs} रन, {wickets} विकेट, {overs} ओवर के बाद।",
+    "छह गेंदें पूरी, स्कोर है {runs} रन, {wickets} विकेट, {overs} ओवर।",
+    "{overs} ओवर पूरे, टीम अभी {runs} रन पर, {wickets} विकेट गंवाकर।",
 ]
 # Genuine dot balls (runs stayed same, but the striker's balls-faced count
 # went up by 1) - kept short/occasional so it doesn't get repetitive when
@@ -152,25 +159,6 @@ RUN_LINE_MAP = {
     4: FOUR_LINES,
     6: SIX_LINES,
 }
-
-def append_ball_event(tag):
-    """Append a short event tag (e.g. '4', '6', 'W', '1', '0') to the shared
-    ball history file, keeping only the most recent MAX_BALL_HISTORY entries."""
-    history = []
-    if os.path.exists(BALL_HISTORY_FILE):
-        try:
-            with open(BALL_HISTORY_FILE) as f:
-                history = json.load(f)
-        except Exception:
-            history = []
-    history.append(tag)
-    history = history[-MAX_BALL_HISTORY:]
-    try:
-        with open(BALL_HISTORY_FILE, "w") as f:
-            json.dump(history, f)
-    except Exception as e:
-        print(f"[warn] could not write ball history: {e}", flush=True)
-
 
 def get_batsman_runs(batsman):
     match = re.match(r"(\d+)", batsman.get("score", "") or "")
@@ -230,6 +218,26 @@ def fetch_state():
         print(f"[warn] could not fetch score: {e}", flush=True)
         return None
 
+def get_striker_name(batsmen):
+    """Finds whichever batsman is currently marked on_strike - used to
+    attribute ball-by-ball commentary to the right batsman."""
+    for b in batsmen or []:
+        if b.get("on_strike") and b.get("name") and b.get("name") != "score not found":
+            return b.get("name")
+    return None
+
+def find_dismissed_batsman(prev_batsmen, curr_batsmen):
+    """Compares the two batsmen lists to find who just got out: someone
+    present last poll who is no longer in the crease this poll. Returns
+    (name, runs) so the wicket commentary can name them, or (None, None)
+    if we can't confidently tell (e.g. both slots changed at once)."""
+    curr_names = {b.get("name") for b in (curr_batsmen or [])}
+    for b in prev_batsmen or []:
+        name = b.get("name")
+        if name and name != "score not found" and name not in curr_names:
+            return name, get_batsman_runs(b)
+    return None, None
+
 def generate_commentary(prev, curr):
     lines = []
     if not prev:
@@ -244,86 +252,76 @@ def generate_commentary(prev, curr):
         lines.append(random.choice(RESULT_LINES).format(result=curr_result))
         return lines
 
-    curr_batsmen = {b["name"]: get_batsman_runs(b) for b in curr.get("current_batsmen", [])}
-    prev_batsmen = {b["name"]: get_batsman_runs(b) for b in prev.get("current_batsmen", [])}
-    curr_batsmen_balls = {b["name"]: get_batsman_balls(b) for b in curr.get("current_batsmen", [])}
-    prev_batsmen_balls = {b["name"]: get_batsman_balls(b) for b in prev.get("current_batsmen", [])}
-
     curr_bowler = (curr.get("current_bowler") or {}).get("name")
+    striker_name = get_striker_name(curr.get("current_batsmen")) or "बल्लेबाज़"
 
-    # --- Wicket ---
-    new_names = set(curr_batsmen) - set(prev_batsmen)
-    wicket_happened = bool(new_names) and curr_bowler and curr_bowler != "score not found"
-    if wicket_happened:
-        lines.append(random.choice(WICKET_LINES).format(bowler=curr_bowler))
-        append_ball_event("W")
+    # --- Ball-by-ball events: driven by the SAME ground-truth "recent_balls"
+    # list the scoreboard's RECENT strip displays (sourced from Cricbuzz's
+    # own widget in app.py). Using this exact list - instead of separately
+    # re-guessing events from batsmen score/ball-count diffs - guarantees
+    # the commentary always matches what's visually shown on screen. ---
+    prev_recent = prev.get("recent_balls") or []
+    curr_recent = curr.get("recent_balls") or []
 
-    # --- Runs off the bat (1/2/3/4/6) ---
-    explained_batsman_runs = 0
-    for name, curr_runs in curr_batsmen.items():
-        if name in prev_batsmen and curr_runs is not None and prev_batsmen[name] is not None:
-            diff = curr_runs - prev_batsmen[name]
-            if diff and diff > 0:
-                explained_batsman_runs += diff
-                templates = RUN_LINE_MAP.get(diff)
-                if templates:
-                    lines.append(random.choice(templates).format(batsman=name))
-                    append_ball_event(str(diff))
+    if len(curr_recent) >= len(prev_recent) and curr_recent[:len(prev_recent)] == prev_recent:
+        new_tags = curr_recent[len(prev_recent):]
+    else:
+        # list shrank, or diverged (new innings/match, or the window shifted) -
+        # treat only the single latest entry as "new" to avoid re-announcing
+        # a big backlog all at once.
+        new_tags = curr_recent[-1:]
+
+    for tag in new_tags:
+        if tag == "W":
+            if curr_bowler and curr_bowler != "score not found":
+                dismissed_name, dismissed_runs = find_dismissed_batsman(
+                    prev.get("current_batsmen"), curr.get("current_batsmen")
+                )
+                if dismissed_name:
+                    lines.append(random.choice(WICKET_LINES_FULL).format(
+                        batsman=dismissed_name,
+                        runs=dismissed_runs if dismissed_runs is not None else "0",
+                        bowler=curr_bowler,
+                    ))
                 else:
-                    # unusual run value (5, 7+) - still report it honestly
-                    lines.append(f"{name} ने {diff} रन जोड़े।")
-                    append_ball_event(str(diff))
-
-    # --- Genuine dot ball(s): runs unchanged for a batsman, but their
-    # BALLS FACED count went up - that only happens on a legal delivery,
-    # so it's the one reliable signal we have that a dot ball actually
-    # happened (rather than just no new poll data yet). If the gap covers
-    # more than one dot ball, log all of them so the RECENT strip stays
-    # accurate, but only *speak* about it some of the time so it doesn't
-    # get repetitive during a quiet spell. ---
-    dot_ball_count = 0
-    if not wicket_happened and not explained_batsman_runs:
-        for name, curr_balls in curr_batsmen_balls.items():
-            if (name in prev_batsmen_balls and curr_balls is not None
-                    and prev_batsmen_balls[name] is not None):
-                balls_diff = curr_balls - prev_batsmen_balls[name]
-                runs_diff = 0
-                if (name in curr_batsmen and name in prev_batsmen
-                        and curr_batsmen[name] is not None and prev_batsmen[name] is not None):
-                    runs_diff = curr_batsmen[name] - prev_batsmen[name]
-                if balls_diff and balls_diff > 0 and runs_diff == 0:
-                    dot_ball_count = balls_diff
-                    break
-
-    if dot_ball_count:
-        for _ in range(dot_ball_count):
-            append_ball_event("0")
-        lines.append(random.choice(DOT_BALL_LINES))
-
-    # --- Extras: team total rose but no batsman's score explains it ---
-    curr_team_runs = get_team_runs(curr.get("score"))
-    prev_team_runs = get_team_runs(prev.get("score"))
-    if (curr_team_runs is not None and prev_team_runs is not None
-            and not wicket_happened and not explained_batsman_runs and not dot_ball_count):
-        team_diff = curr_team_runs - prev_team_runs
-        if team_diff > 0:
+                    lines.append(random.choice(WICKET_LINES).format(bowler=curr_bowler))
+        elif tag == "0":
+            lines.append(random.choice(DOT_BALL_LINES))
+        elif tag.lstrip("+").isdigit() and not tag.startswith("+"):
+            diff = int(tag)
+            templates = RUN_LINE_MAP.get(diff)
+            if templates:
+                lines.append(random.choice(templates).format(batsman=striker_name))
+            else:
+                # unusual run value (5, 7+) - still report it honestly
+                lines.append(f"{striker_name} ने {diff} रन जोड़े।")
+        elif tag.startswith("+"):
             lines.append(random.choice(EXTRA_RUN_LINES))
-            append_ball_event("+" + str(team_diff))
+        # any other/unrecognised tag: skip silently rather than guessing
 
     # --- Over completed: overs count ticked over to the next whole number
-    # (e.g. 12.6 -> 13.0). Explicitly announce score + wickets, as requested,
-    # in addition to whatever ball-by-ball line(s) were already added above. ---
+    # (e.g. 12.6 -> 13.0). Speaks runs/wickets/overs as separate natural
+    # numbers (NOT the raw "125/5" score string, which TTS was reading
+    # awkwardly as "125 bata 5" instead of "125 run par 5 wicket"). ---
     curr_overs = get_overs(curr.get("score"))
     prev_overs = get_overs(prev.get("score"))
     if curr_overs is not None and prev_overs is not None and int(curr_overs) > int(prev_overs):
         wkts = get_team_wickets(curr.get("score"))
+        runs = get_team_runs(curr.get("score"))
         lines.append(random.choice(OVER_END_LINES).format(
-            score=curr.get("score"), wickets=wkts if wkts is not None else "0"
+            runs=runs if runs is not None else "0",
+            wickets=wkts if wkts is not None else "0",
+            overs=int(curr_overs),
         ))
 
-    # --- Fallback: over/score update line if nothing else was said ---
-    if curr.get("score") != prev.get("score") and not lines and not dot_ball_count:
-        lines.append(random.choice(OVER_LINES).format(score=curr.get("score")))
+    # --- Fallback: score update line if nothing else was said ---
+    if curr.get("score") != prev.get("score") and not lines:
+        fallback_runs = get_team_runs(curr.get("score"))
+        fallback_wkts = get_team_wickets(curr.get("score"))
+        lines.append(random.choice(OVER_LINES).format(
+            runs=fallback_runs if fallback_runs is not None else "0",
+            wickets=fallback_wkts if fallback_wkts is not None else "0",
+        ))
 
     return lines
 
