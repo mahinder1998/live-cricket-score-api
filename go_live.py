@@ -53,15 +53,14 @@ FRAMERATE = 2          # scoreboard doesn't need to be smooth, 2fps is plenty
 AUDIO_SAMPLE_RATE = 24000
 SPEECH_FIFO = "/tmp/speech_audio.fifo"
 
-# --- Bitrate tuned DOWN to match this VPS's actual observed upload capacity
-# (YouTube reported the stream only sustaining ~1400 Kbps, well below the
-# old 4000k target - that mismatch is what was causing "Poor"/buffering).
-# Kept comfortably under that ceiling, with a faster encode preset so CPU
-# isn't a bottleneck either.
-VIDEO_BITRATE = "900k"
-VIDEO_MAXRATE = "1100k"
-VIDEO_BUFSIZE = "2200k"
-AUDIO_BITRATE = "96k"
+# --- Bitrate tuned to this VPS's actual measured upload speed, which is
+# severely constrained and unstable (speedtest showed anywhere from ~0 to
+# 1.65 Mbit/s upload). Kept well under that ceiling with a large safety
+# margin, since even brief dips toward 0 would otherwise stall the stream.
+VIDEO_BITRATE = "500k"
+VIDEO_MAXRATE = "600k"
+VIDEO_BUFSIZE = "1200k"
+AUDIO_BITRATE = "64k"
 X264_PRESET = "veryfast"
 # -----------------------------
 
