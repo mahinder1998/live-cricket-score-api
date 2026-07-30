@@ -57,10 +57,23 @@ SPEECH_FIFO = "/tmp/speech_audio.fifo"
 # severely constrained and unstable (speedtest showed anywhere from ~0 to
 # 1.65 Mbit/s upload). Kept well under that ceiling with a large safety
 # margin, since even brief dips toward 0 would otherwise stall the stream.
-VIDEO_BITRATE = "500k"
-VIDEO_MAXRATE = "600k"
-VIDEO_BUFSIZE = "1200k"
-AUDIO_BITRATE = "64k"
+# --- Maximum-stability settings for long (2-3hr) matches on a constrained/
+# unstable VPS connection. Downscaling the ENCODE resolution (not the
+# board.png itself, which stays 1280x720) means the same visual clarity
+# needs far fewer bits, letting us run at a much safer bitrate. The bigger
+# bufsize (~4x maxrate) gives ffmpeg room to absorb brief network dips
+# without stalling/disconnecting, which matters more than raw quality for
+# a mostly-static scoreboard graphic refreshed only a few times a second.
+# --- BALANCED profile: noticeably better video AND audio quality than the
+# ultra-safe settings, while still staying well under the VPS's more
+# typical observed upload speed (1.4-2.96 Mbps in repeated tests). If
+# "Poor" comes back during a real match, dial VIDEO_BITRATE/MAXRATE and
+# AUDIO_BITRATE back down toward the previous safe values (350k/420k/64k).
+ENCODE_WIDTH, ENCODE_HEIGHT = 960, 540
+VIDEO_BITRATE = "800k"
+VIDEO_MAXRATE = "1000k"
+VIDEO_BUFSIZE = "2500k"
+AUDIO_BITRATE = "128k"
 X264_PRESET = "veryfast"
 # -----------------------------
 
@@ -166,11 +179,15 @@ def build_ffmpeg_command(stream_key):
         # Audio input 2: our speech FIFO (TTS commentary + silence)
         "-f", "s16le", "-ar", str(AUDIO_SAMPLE_RATE), "-ac", "1", "-i", SPEECH_FIFO,
 
-        # Mix crowd (quieter) + speech (louder) into one audio track
+        # Mix crowd (quieter) + speech (louder) into one audio track, and
+        # downscale the video to ENCODE_WIDTH x ENCODE_HEIGHT (see comment
+        # above) for a big bitrate-efficiency win with minimal visible
+        # quality loss on this kind of graphic.
         "-filter_complex",
+        f"[0:v]scale={ENCODE_WIDTH}:{ENCODE_HEIGHT}[vout];"
         "[1:a]volume=0.35[bg];[2:a]volume=1.0[fg];[bg][fg]amix=inputs=2:duration=first:dropout_transition=2[aout]",
 
-        "-map", "0:v", "-map", "[aout]",
+        "-map", "[vout]", "-map", "[aout]",
 
         "-c:v", "libx264", "-preset", X264_PRESET, "-b:v", VIDEO_BITRATE,
         "-maxrate", VIDEO_MAXRATE, "-bufsize", VIDEO_BUFSIZE,
