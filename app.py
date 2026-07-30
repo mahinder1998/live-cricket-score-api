@@ -538,9 +538,18 @@ class ScoreService:
             # events from score snapshots polled every few seconds (that
             # approach can never see dot balls, and can merge multiple
             # deliveries into one wrong combined number).
+            #
+            # IMPORTANT BUG FIX: Cricbuzz also uses "Wd" (wide) and "Nb"
+            # (no-ball) as tokens here, e.g. "Recent : 0 0 1 1 Wd". The old
+            # pattern's alternation was `[0-9]+|W`, which matched ONLY the
+            # "W" inside "Wd" and silently dropped the trailing "d" - so a
+            # WIDE ball was being reported (and then rendered/spoken) as a
+            # WICKET. The alternatives below are tried longest-first
+            # (Wd/Nb/Lb/B before the bare "W") so multi-letter extras are
+            # matched in FULL and never get truncated into a fake "W".
             recent_balls: List[str] = []
             recent_match = re.search(
-                r"Recent\s*:\s*((?:[0-9]+|W)(?:\s+(?:[0-9]+|W))*)",
+                r"Recent\s*:\s*((?:Wd|Nb|Lb|B|[0-9]+|W)(?:\s+(?:Wd|Nb|Lb|B|[0-9]+|W))*)",
                 page_text,
             )
             if recent_match:

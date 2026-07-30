@@ -116,12 +116,25 @@ WICKET_LINES_FULL = [
     "{bowler} की जबरदस्त गेंद, {batsman} {runs} रन बनाकर चलते बने।",
     "विकेट गिर गया! {batsman} {runs} रन पर आउट, {bowler} ने तोड़ी साझेदारी।",
 ]
-# Deliberately generic - we genuinely cannot tell wide/no-ball/bye apart
-# from this data source, so we don't pretend to.
+# Bye/leg-bye: Cricbuzz's "Recent" widget doesn't distinguish these two
+# from each other, so this pair stays deliberately generic.
 EXTRA_RUN_LINES = [
     "टीम को अतिरिक्त रन मिला, स्कोर आगे बढ़ा।",
     "एक्स्ट्रा रन के साथ स्कोर में इज़ाफ़ा।",
     "कुछ अतिरिक्त रन टीम के खाते में जुड़ गए।",
+]
+# Wide and no-ball ARE explicitly labelled by Cricbuzz's own "Recent"
+# widget ("Wd" / "Nb"), so - unlike the generic extras above - we can name
+# these specifically and honestly.
+WIDE_LINES = [
+    "वाइड बॉल! टीम को एक अतिरिक्त रन मिला।",
+    "गेंद लाइन से बाहर, अंपायर ने वाइड का इशारा किया।",
+    "वाइड! फ्री का एक रन स्कोर में जुड़ा।",
+]
+NO_BALL_LINES = [
+    "नो बॉल! एक अतिरिक्त रन, और फ्री हिट भी मिलेगी।",
+    "गेंदबाज़ ने लाइन क्रॉस की, नो बॉल दी गई।",
+    "ओवरस्टेप, अंपायर ने नो बॉल का इशारा किया।",
 ]
 OVER_LINES = [
     "स्कोर अभी है {runs} रन, {wickets} विकेट।",
@@ -299,6 +312,12 @@ def generate_commentary(prev, curr):
                 # unusual run value (5, 7+) - still report it honestly
                 lines.append(f"{striker_name} ने {diff} रन जोड़े।")
         elif tag.startswith("+"):
+            lines.append(random.choice(EXTRA_RUN_LINES))
+        elif tag == "Wd":
+            lines.append(random.choice(WIDE_LINES))
+        elif tag == "Nb":
+            lines.append(random.choice(NO_BALL_LINES))
+        elif tag in ("Lb", "B"):
             lines.append(random.choice(EXTRA_RUN_LINES))
         # any other/unrecognised tag: skip silently rather than guessing
 

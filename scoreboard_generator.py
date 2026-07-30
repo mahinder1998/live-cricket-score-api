@@ -97,7 +97,14 @@ COLOR_STRIKE_DOT = (60, 230, 110)  # bright green - the on-strike indicator
 PANEL_FILL = (8, 14, 12, 205)          # semi-transparent panel background
 PANEL_FILL_DARK = (4, 8, 14, 220)      # slightly darker/more opaque (header, footer)
 
-BALL_COLORS = {"4": (50, 130, 220), "6": (185, 70, 220), "W": (220, 55, 55)}
+BALL_COLORS = {
+    "4": (50, 130, 220), "6": (185, 70, 220), "W": (220, 55, 55),
+    # Extras (wide/no-ball/leg-bye/bye) get their OWN muted amber color -
+    # distinct from the wicket-red "W", so a wide is never visually
+    # confused with a wicket on the RECENT strip.
+    "Wd": (200, 150, 40), "Nb": (200, 150, 40),
+    "Lb": (120, 120, 130), "B": (120, 120, 130),
+}
 BALL_DEFAULT_COLOR = (75, 95, 85)
 
 TEAM_COLORS = {
