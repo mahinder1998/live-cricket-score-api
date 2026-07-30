@@ -112,3 +112,5 @@ board.png
 match_id.txt
 *.tmp
 .board.png.tmp
+ball_history.json
+match_id.txt
