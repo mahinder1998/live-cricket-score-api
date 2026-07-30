@@ -44,9 +44,9 @@ import edge_tts
 SCORE_API_URL = "http://localhost:6020/"
 MATCH_ID = "144758"          # fallback default if match_id.txt doesn't exist yet
 MATCH_ID_FILE = "match_id.txt"   # <-- EDIT THIS FILE ON THE VPS to change matches, no git needed!
-POLL_INTERVAL_SECONDS = 8    # checked more often, to catch more individual balls
+POLL_INTERVAL_SECONDS = 5    # checked frequently, so commentary keeps up with every ball
 VOICE = "hi-IN-MadhurNeural"    # try "hi-IN-SwaraNeural" for a female voice
-VOICE_RATE = "+8%"           # slightly faster = more energetic commentary feel
+VOICE_RATE = "+0%"           # natural pace - faster rates start to sound rushed/robotic
 VOICE_PITCH = "+0Hz"
 AUDIO_DIR = "audio_queue"
 BALL_HISTORY_FILE = "ball_history.json"
@@ -62,42 +62,69 @@ ONE_RUN_LINES = [
     "{batsman} ने एक रन चुरा लिया।",
     "बल्ले का हल्का सा टच, {batsman} एक रन के लिए दौड़े।",
     "सिंगल रन, {batsman} स्ट्राइक बदलते हैं।",
+    "आराम से एक रन ले लिया {batsman} ने।",
+    "फील्डर के पास गई, बस एक रन मिला।",
+    "{batsman} जल्दी से क्रीज़ के दूसरी तरफ, आसान सिंगल।",
+    "स्ट्राइक रोटेट करते हुए एक रन।",
 ]
 TWO_RUN_LINES = [
     "अच्छी दौड़, {batsman} ने दो रन पूरे किए।",
     "गैप में गेंद, {batsman} की तरफ से दो रन।",
+    "अच्छी रनिंग बिटवीन द विकेट्स, दो रन मिले।",
+    "{batsman} और उनके पार्टनर की तेज़ दौड़, दो रन।",
 ]
 THREE_RUN_LINES = [
     "शानदार फील्डिंग के बावजूद {batsman} ने तीन रन दौड़ लिए।",
     "तीन रन! {batsman} और उनके साथी की बेहतरीन रनिंग।",
+    "डीप से थ्रो थोड़ा लेट, तीन रन भाग निकले।",
 ]
 FOUR_LINES = [
     "चौका! {batsman} ने शानदार शॉट खेला।",
     "बहुत बढ़िया शॉट! {batsman} ने आराम से चार रन बटोरे।",
     "क्या टाइमिंग है! {batsman} की तरफ से एक और चौका।",
     "गेंद बाउंड्री के पार, चौका {batsman} के बल्ले से।",
+    "वाह! बीच में से गेंद निकल गई, आसान चौका।",
+    "{batsman} ने बैकफुट पे जाकर खूबसूरत चौका जड़ा।",
+    "कवर की तरफ खूबसूरत टाइमिंग, गेंद बाउंड्री पार।",
+    "फील्डर देखता रह गया, गेंद सीधा रस्सी के पार।",
 ]
 SIX_LINES = [
     "छक्का! {batsman} ने गेंद स्टैंड्स में भेज दी!",
     "जबरदस्त शॉट! {batsman} का जबरदस्त छक्का!",
     "बहुत ऊंचा शॉट, सीधा दर्शकों के बीच! शानदार छक्का {batsman} का!",
     "क्या शक्तिशाली शॉट, गेंद मैदान के बाहर, छक्का {batsman} की तरफ से!",
+    "वो गई! {batsman} ने गेंद को हवा में उड़ा दिया, बहुत बड़ा छक्का।",
+    "क्या हिट है भाई! दर्शक झूम उठे, छक्का {batsman} का।",
+    "लॉन्ग ऑन के ऊपर से सीधा मैदान के बाहर, बड़ा छक्का।",
 ]
 WICKET_LINES = [
     "आउट! {bowler} ने बहुत बड़ा विकेट निकाला!",
     "गया! सही समय पर {bowler} ने कमाल कर दिया।",
     "विकेट गिर गया! {bowler} की जबरदस्त गेंदबाज़ी।",
     "बड़ा झटका! {bowler} ने बल्लेबाज़ी क्रम तोड़ दिया।",
+    "ओह हो! विकेट गिर गया, {bowler} खुशी से उछल पड़े।",
+    "यही चाहिए था टीम को! {bowler} ने ब्रेकथ्रू दिला दिया।",
+    "क्या गेंद थी! {bowler} ने बल्लेबाज़ को छका दिया।",
 ]
 # Deliberately generic - we genuinely cannot tell wide/no-ball/bye apart
 # from this data source, so we don't pretend to.
 EXTRA_RUN_LINES = [
     "टीम को अतिरिक्त रन मिला, स्कोर आगे बढ़ा।",
     "एक्स्ट्रा रन के साथ स्कोर में इज़ाफ़ा।",
+    "कुछ अतिरिक्त रन टीम के खाते में जुड़ गए।",
 ]
 OVER_LINES = [
     "ओवर खत्म हुआ। स्कोर है {score}।",
     "यह ओवर समाप्त, कुल स्कोर {score}।",
+]
+# Spoken specifically when an over completes (overs count ticks over to the
+# next whole number) - explicitly calls out the score AND wickets down, as
+# requested, separate from the generic OVER_LINES fallback above.
+OVER_END_LINES = [
+    "ओवर खत्म! स्कोर है {score}, {wickets} विकेट गिर चुके हैं।",
+    "और यह रहा ओवर का अंत - {score}, {wickets} विकेट पर।",
+    "छह गेंदें पूरी हुईं। स्कोरबोर्ड कहता है {score}, {wickets} विकेट।",
+    "उस ओवर का समापन, टीम अभी {score} पर खड़ी है, {wickets} विकेट गंवाकर।",
 ]
 # Genuine dot balls (runs stayed same, but the striker's balls-faced count
 # went up by 1) - kept short/occasional so it doesn't get repetitive when
@@ -106,6 +133,9 @@ DOT_BALL_LINES = [
     "डॉट बॉल, कोई रन नहीं।",
     "अच्छी गेंद, बल्लेबाज़ रन नहीं बना सके।",
     "रन रेट पर थोड़ा दबाव, यह गेंद डॉट रही।",
+    "गेंद सीधा बल्ले पर, कोई रन नहीं मिला।",
+    "बल्लेबाज़ ने रोक ली, रन की गुंजाइश नहीं थी।",
+    "टाइट लाइन, बल्लेबाज़ सिर्फ डिफेंड कर पाए।",
 ]
 # Spoken once the match_result field appears (see app.py) - announced with
 # top priority, ahead of any other commentary for that poll.
@@ -161,6 +191,20 @@ def get_team_runs(score_str):
         return None
     m = re.match(r"[A-Za-z]+\s+(\d+)", score_str)
     return int(m.group(1)) if m else None
+
+def get_team_wickets(score_str):
+    """Parse 'IND 145/3 (20.2)' style string and return wickets down (3)."""
+    if not score_str:
+        return None
+    m = re.match(r"[A-Za-z]+\s+\d+/(\d+)", score_str)
+    return int(m.group(1)) if m else None
+
+def get_overs(score_str):
+    """Parse 'IND 145/3 (20.2)' style string and return overs bowled (20.2)."""
+    if not score_str:
+        return None
+    m = re.search(r"\(([\d.]+)\)", score_str)
+    return float(m.group(1)) if m else None
 
 def get_current_match_id():
     """Reads match_id.txt fresh every time - so you can change the match
@@ -254,8 +298,7 @@ def generate_commentary(prev, curr):
     if dot_ball_count:
         for _ in range(dot_ball_count):
             append_ball_event("0")
-        if random.random() < 0.35:
-            lines.append(random.choice(DOT_BALL_LINES))
+        lines.append(random.choice(DOT_BALL_LINES))
 
     # --- Extras: team total rose but no batsman's score explains it ---
     curr_team_runs = get_team_runs(curr.get("score"))
@@ -266,6 +309,17 @@ def generate_commentary(prev, curr):
         if team_diff > 0:
             lines.append(random.choice(EXTRA_RUN_LINES))
             append_ball_event("+" + str(team_diff))
+
+    # --- Over completed: overs count ticked over to the next whole number
+    # (e.g. 12.6 -> 13.0). Explicitly announce score + wickets, as requested,
+    # in addition to whatever ball-by-ball line(s) were already added above. ---
+    curr_overs = get_overs(curr.get("score"))
+    prev_overs = get_overs(prev.get("score"))
+    if curr_overs is not None and prev_overs is not None and int(curr_overs) > int(prev_overs):
+        wkts = get_team_wickets(curr.get("score"))
+        lines.append(random.choice(OVER_END_LINES).format(
+            score=curr.get("score"), wickets=wkts if wkts is not None else "0"
+        ))
 
     # --- Fallback: over/score update line if nothing else was said ---
     if curr.get("score") != prev.get("score") and not lines and not dot_ball_count:
@@ -316,4 +370,4 @@ def main():
         time.sleep(POLL_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    main()  
+    main()

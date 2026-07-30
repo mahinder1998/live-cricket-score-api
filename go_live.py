@@ -168,13 +168,13 @@ def build_ffmpeg_command(stream_key):
         # Audio input 2: our speech FIFO (TTS commentary + silence)
         "-f", "s16le", "-ar", str(AUDIO_SAMPLE_RATE), "-ac", "1", "-i", SPEECH_FIFO,
 
-        # Mix crowd (quieter) + speech (louder) into one audio track, and
-        # downscale the video to ENCODE_WIDTH x ENCODE_HEIGHT (see comment
-        # above) for a big bitrate-efficiency win with minimal visible
-        # quality loss on this kind of graphic.
+        # Mix crowd (much quieter now) + speech (louder, boosted) into one
+        # audio track. A limiter is added after the mix so boosting the
+        # speech volume above 1.0 can't cause harsh digital clipping.
         "-filter_complex",
         f"[0:v]scale={ENCODE_WIDTH}:{ENCODE_HEIGHT}[vout];"
-        "[1:a]volume=0.35[bg];[2:a]volume=1.0[fg];[bg][fg]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+        "[1:a]volume=0.12[bg];[2:a]volume=1.7[fg];"
+        "[bg][fg]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.95[aout]",
 
         "-map", "[vout]", "-map", "[aout]",
 

@@ -58,19 +58,19 @@ def load_font(path, size):
     except Exception:
         return ImageFont.load_default()
 
-FONT_TITLE = load_font(FONT_BEBAS, 32)
-FONT_BADGE = load_font(FONT_BEBAS, 24)
-FONT_SCORE = load_font(FONT_ANTON, 46)
-FONT_TEAM = load_font(FONT_BEBAS, 24)
-FONT_LABEL = load_font(FONT_BEBAS, 20)
-FONT_NAME = load_font(FONT_BEBAS, 28)
-FONT_STAT = load_font(FONT_BEBAS, 26)  # bigger font for runs/balls, SR, etc.
-FONT_SUB = load_font(FONT_REGULAR, 17)
-FONT_AVATAR = load_font(FONT_ANTON, 30)
-FONT_BALL = load_font(FONT_ANTON, 18)
-FONT_PROMO = load_font(FONT_BEBAS, 22)
-FONT_STATUS = load_font(FONT_BEBAS, 27)      # bigger status-bar text (target/CRR/break status)
-FONT_YET_TO_BAT = load_font(FONT_BEBAS, 24)
+FONT_TITLE = load_font(FONT_BEBAS, 40)
+FONT_BADGE = load_font(FONT_BEBAS, 28)
+FONT_SCORE = load_font(FONT_ANTON, 58)
+FONT_TEAM = load_font(FONT_BEBAS, 32)
+FONT_LABEL = load_font(FONT_BEBAS, 24)
+FONT_NAME = load_font(FONT_BEBAS, 36)
+FONT_STAT = load_font(FONT_BEBAS, 34)  # bigger font for runs/balls, SR, etc.
+FONT_SUB = load_font(FONT_REGULAR, 21)
+FONT_AVATAR = load_font(FONT_ANTON, 34)
+FONT_BALL = load_font(FONT_ANTON, 22)
+FONT_PROMO = load_font(FONT_BEBAS, 26)
+FONT_STATUS = load_font(FONT_BEBAS, 32)      # bigger status-bar text (target/CRR/break status)
+FONT_YET_TO_BAT = load_font(FONT_BEBAS, 30)
 
 COLOR_ACCENT = (255, 196, 0)
 COLOR_LIVE_RED = (220, 40, 40)
@@ -751,7 +751,7 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
     # Score panels - ALWAYS 2, side by side: 1st innings + 2nd innings.
     # If the 2nd team hasn't batted yet, that slot shows "YET TO BAT"
     # instead of a score (see build_score_slots / _score_cache above).
-    panel_y, panel_h = 80, 108
+    panel_y, panel_h = 80, 128
     panel_w = (WIDTH - 24 * 3) // 2
     score_slots = build_score_slots(title, all_scores, get_current_match_id())
     score_positions = [(24, score_slots[0]), (24 * 2 + panel_w, score_slots[1])]
@@ -777,7 +777,7 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
     # entirely rather than shown empty, and the player row moves up to
     # take its place.
     recent_y = status_y + status_h + 14
-    recent_h = 70
+    recent_h = 78
     if has_recent:
         recent_pts = clipped_rect(24, recent_y, WIDTH - 48, recent_h, cut=20)
         card_top, card_bottom = (14, 34, 24, 230), (5, 12, 9, 230)
@@ -789,7 +789,7 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
 
     # Player row: 2 batters + 1 bowler, SIDE BY SIDE (matches reference's
     # bottom row of 3 cards, instead of stacked)
-    row_h = 140
+    row_h = 158
     gap = 14
     card_w3 = (WIDTH - 48 - gap * 2) // 3
     card_x_positions = [24, 24 + card_w3 + gap, 24 + 2 * (card_w3 + gap)]
@@ -885,7 +885,7 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
     # RECENT strip foreground content (only when there's history to show)
     if has_recent:
         draw_ribbon_tag(draw, 24, recent_y + 8, "RECENT", FONT_LABEL, (*COLOR_ACCENT, 255), text_color=(20, 20, 20))
-        circle_r = 20
+        circle_r = 23
         start_x = WIDTH - 48
         cy = recent_y + recent_h // 2 + 4
         for tag in reversed(ball_history[-6:]):
@@ -912,33 +912,33 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
         cx0 = card_x_positions[i]
         sr = compute_strike_rate(b.get("score"))
         draw_ribbon_tag(draw, cx0, row_y + 8, "BATTER", FONT_LABEL, (*FALLBACK_COLORS[2], 255))
-        draw_bat_icon(composited, cx0 + card_w3 - 32, row_y + 68, 56, FALLBACK_COLORS[2])
-        draw_avatar(composited, cx0 + 44, row_y + 68, 28, (name[0].upper() if name else "?"), FALLBACK_COLORS[2])
+        draw_bat_icon(composited, cx0 + card_w3 - 36, row_y + 76, 64, FALLBACK_COLORS[2])
+        draw_avatar(composited, cx0 + 48, row_y + 76, 32, (name[0].upper() if name else "?"), FALLBACK_COLORS[2])
         if on_strike:
             # small glowing dot at the bottom-right of the avatar marks
             # the batsman who is currently on strike
-            draw_strike_dot(composited, cx0 + 44 + 20, row_y + 68 + 20, pulse=pulse_phase)
-        name_x = cx0 + 82
+            draw_strike_dot(composited, cx0 + 48 + 23, row_y + 76 + 23, pulse=pulse_phase)
+        name_x = cx0 + 92
         display_name = name or "New Batsman"
         display_score = (b.get("score") or "") if name else ""
         if display_score == "score not found":
             display_score = ""
-        draw.text((name_x, row_y + 48), display_name, font=FONT_NAME, fill=COLOR_TEXT if name else COLOR_SUBTEXT)
+        draw.text((name_x, row_y + 44), display_name, font=FONT_NAME, fill=COLOR_TEXT if name else COLOR_SUBTEXT)
         if display_score:
-            draw.text((name_x, row_y + 82), display_score, font=FONT_STAT, fill=COLOR_ACCENT)
+            draw.text((name_x, row_y + 88), display_score, font=FONT_STAT, fill=COLOR_ACCENT)
         sr_text = f"SR: {sr}" if sr is not None else ""
         if sr_text:
-            draw.text((cx0 + 16, row_y + row_h - 24), sr_text, font=FONT_SUB, fill=COLOR_SUBTEXT)
+            draw.text((cx0 + 16, row_y + row_h - 32), sr_text, font=FONT_SUB, fill=COLOR_SUBTEXT)
 
     bowler_x = card_x_positions[2]
     draw_ribbon_tag(draw, bowler_x, row_y + 8, "BOWLER", FONT_LABEL, (*FALLBACK_COLORS[3], 255))
-    draw_ball_icon(composited, bowler_x + card_w3 - 40, row_y + 68, 22)
-    draw_avatar(composited, bowler_x + 44, row_y + 68, 28, (bowler_name[0].upper() if bowler_name else "?"), FALLBACK_COLORS[3])
-    draw.text((bowler_x + 82, row_y + 48), bowler_name or "-", font=FONT_NAME, fill=COLOR_TEXT)
+    draw_ball_icon(composited, bowler_x + card_w3 - 44, row_y + 76, 26)
+    draw_avatar(composited, bowler_x + 48, row_y + 76, 32, (bowler_name[0].upper() if bowler_name else "?"), FALLBACK_COLORS[3])
+    draw.text((bowler_x + 92, row_y + 44), bowler_name or "-", font=FONT_NAME, fill=COLOR_TEXT)
     if bowler_figures:
-        draw.text((bowler_x + 82, row_y + 82), bowler_figures, font=FONT_STAT, fill=COLOR_ACCENT)
+        draw.text((bowler_x + 92, row_y + 88), bowler_figures, font=FONT_STAT, fill=COLOR_ACCENT)
     if bowler_eco:
-        draw.text((bowler_x + 16, row_y + row_h - 24), bowler_eco, font=FONT_SUB, fill=COLOR_SUBTEXT)
+        draw.text((bowler_x + 16, row_y + row_h - 32), bowler_eco, font=FONT_SUB, fill=COLOR_SUBTEXT)
 
     if have_thumb and custom_thumb_img is None:
         team1 = score_positions[0][1][0] if score_positions else None
@@ -1036,4 +1036,4 @@ def main():
         time.sleep(RENDER_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    main()
+    main() 
