@@ -97,15 +97,49 @@ COLOR_STRIKE_DOT = (60, 230, 110)  # bright green - the on-strike indicator
 PANEL_FILL = (8, 14, 12, 205)          # semi-transparent panel background
 PANEL_FILL_DARK = (4, 8, 14, 220)      # slightly darker/more opaque (header, footer)
 
-BALL_COLORS = {
-    "4": (50, 130, 220), "6": (185, 70, 220), "W": (220, 55, 55),
-    # Extras (wide/no-ball/leg-bye/bye) get their OWN muted amber color -
-    # distinct from the wicket-red "W", so a wide is never visually
-    # confused with a wicket on the RECENT strip.
-    "Wd": (200, 150, 40), "Nb": (200, 150, 40),
-    "Lb": (120, 120, 130), "B": (120, 120, 130),
-}
+BALL_COLORS = {"4": (50, 130, 220), "6": (185, 70, 220), "W": (220, 55, 55)}
 BALL_DEFAULT_COLOR = (75, 95, 85)
+BALL_EXTRA_COLOR = (200, 150, 40)       # wide / no-ball
+BALL_BYE_COLOR = (120, 120, 130)        # leg-bye / bye
+
+def classify_ball_tag(tag):
+    """Identifies what kind of delivery a recent_balls tag represents,
+    tolerating an embedded run count on either side (e.g. 'Wd1', '1Wd',
+    '4Nb') - so these never get mistaken for a plain run or a wicket.
+    A bare 'W' (no digits, no letters attached) is the ONLY thing treated
+    as an actual wicket."""
+    if tag == "W":
+        return "wicket"
+    if re.fullmatch(r"\d*wd\d*", tag, re.IGNORECASE):
+        return "wide"
+    if re.fullmatch(r"\d*nb\d*", tag, re.IGNORECASE):
+        return "noball"
+    if re.fullmatch(r"\d*lb\d*", tag, re.IGNORECASE):
+        return "legbye"
+    if re.fullmatch(r"\d*b\d*", tag, re.IGNORECASE):
+        return "bye"
+    if tag.isdigit():
+        return "runs"
+    return "other"
+
+def color_for_ball_tag(tag):
+    kind = classify_ball_tag(tag)
+    if kind == "wicket":
+        return (220, 55, 55)
+    if kind in ("wide", "noball"):
+        return BALL_EXTRA_COLOR
+    if kind in ("legbye", "bye"):
+        return BALL_BYE_COLOR
+    if kind == "runs":
+        return BALL_COLORS.get(tag, BALL_DEFAULT_COLOR)
+    return BALL_DEFAULT_COLOR
+
+def label_for_ball_tag(tag):
+    """Short, clean text to draw inside the RECENT strip's ball circle -
+    strips any embedded run digit from extras (e.g. 'Wd1' -> 'Wd') so the
+    small circle never has to fit an overly long string."""
+    kind = classify_ball_tag(tag)
+    return {"wide": "Wd", "noball": "Nb", "legbye": "Lb", "bye": "B"}.get(kind, tag)
 
 TEAM_COLORS = {
     "IND": (26, 60, 150), "AUS": (0, 100, 70), "ENG": (10, 40, 100),
@@ -628,13 +662,14 @@ def draw_recent_balls(odraw, draw, x, y, w, h, history):
     start_x = x + w - 20
     cy = y + h // 2 + 6
     for tag in reversed(history[-10:]):
-        color = BALL_COLORS.get(tag, BALL_DEFAULT_COLOR)
+        color = color_for_ball_tag(tag)
+        label = label_for_ball_tag(tag)
         cx = start_x - circle_r
         draw.ellipse([(cx - circle_r - 1, cy - circle_r - 1), (cx + circle_r + 1, cy + circle_r + 1)], fill=(255, 255, 255))
         draw.ellipse([(cx - circle_r, cy - circle_r), (cx + circle_r, cy + circle_r)], fill=color)
-        bbox = draw.textbbox((0, 0), tag, font=FONT_BALL)
+        bbox = draw.textbbox((0, 0), label, font=FONT_BALL)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((cx - tw / 2, cy - th / 2 - bbox[1]), tag, font=FONT_BALL, fill=COLOR_TEXT)
+        draw.text((cx - tw / 2, cy - th / 2 - bbox[1]), label, font=FONT_BALL, fill=COLOR_TEXT)
         start_x -= (circle_r * 2 + 8)
         if start_x < x + 100:
             break
@@ -954,15 +989,16 @@ def render_board(state, ball_history, popup=None, popup_progress=0.0, pulse_phas
         start_x = WIDTH - 48
         cy = recent_y + recent_h // 2 + 4
         for tag in reversed(ball_history[-6:]):
-            color = BALL_COLORS.get(tag, BALL_DEFAULT_COLOR)
+            color = color_for_ball_tag(tag)
+            label = label_for_ball_tag(tag)
             cx = start_x - circle_r
             white_bg = smooth_circle_layer(circle_r + 1, (255, 255, 255))
             composited.paste(white_bg, (cx - circle_r - 1, cy - circle_r - 1), white_bg)
             ball_circle = smooth_circle_layer(circle_r, color)
             composited.paste(ball_circle, (cx - circle_r, cy - circle_r), ball_circle)
-            bbox = draw.textbbox((0, 0), tag, font=FONT_BALL)
+            bbox = draw.textbbox((0, 0), label, font=FONT_BALL)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            draw.text((cx - tw / 2, cy - th / 2 - bbox[1]), tag, font=FONT_BALL, fill=COLOR_TEXT)
+            draw.text((cx - tw / 2, cy - th / 2 - bbox[1]), label, font=FONT_BALL, fill=COLOR_TEXT)
             start_x -= (circle_r * 2 + 8)
             if start_x < 24 + 160:
                 break
@@ -1076,7 +1112,12 @@ def main():
 
         if now - last_data_fetch >= POLL_INTERVAL_SECONDS:
             new_state = fetch_state()
-            if new_state and new_state.get("score") == "score not found":
+            # Only treat as "no live match yet" when there's genuinely
+            # nothing to show. If match_result came through (the game just
+            # finished), keep the state even if `score` itself failed to
+            # parse for some reason - the final result still deserves to
+            # be rendered/spoken instead of silently discarded.
+            if new_state and new_state.get("score") == "score not found" and not new_state.get("match_result"):
                 new_state = None
 
             # Prefer recent_balls straight from the API (Cricbuzz's own
@@ -1096,9 +1137,16 @@ def main():
             else:
                 new_tags = []  # don't fire a popup on process startup
             for tag in new_tags:
-                if tag in ("4", "6", "W"):
-                    popup_type = {"4": "FOUR", "6": "SIX", "W": "WICKET"}[tag]
-                    popup_start = now
+                # classify_ball_tag() only calls something "wicket" when
+                # the tag is an EXACT bare "W" - so 'Wd1'/'1Wd'/'Nb4' etc
+                # can never mistakenly pop up a WICKET banner.
+                kind = classify_ball_tag(tag)
+                if kind == "wicket":
+                    popup_type, popup_start = "WICKET", now
+                elif tag == "4":
+                    popup_type, popup_start = "FOUR", now
+                elif tag == "6":
+                    popup_type, popup_start = "SIX", now
 
             state = new_state
             history = new_history

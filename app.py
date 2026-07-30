@@ -383,20 +383,43 @@ class ScoreService:
             if idx != -1:
                 region = page_text[idx:]
 
+        if region is page_text:
+            # Title anchor didn't help (e.g. once a match FINISHES, the
+            # <title> text often changes to a "TEAM won by N runs" style
+            # string that no longer matches the in-progress title we saved
+            # earlier). "Series:" sits right above every match's own score
+            # summary regardless of live/finished state, so it's a solid
+            # second anchor to fall back to before giving up entirely.
+            series_idx = page_text.find("Series:")
+            if series_idx != -1:
+                region = page_text[series_idx:]
+
         end_anchor = re.search(r"Batter\s+R\s+B\s+4s\s+6s\s+SR", region, re.IGNORECASE)
-        region = region[:end_anchor.start()] if end_anchor else region[:800]
+        region = region[:end_anchor.start()] if end_anchor else region[:1500]
 
         scores: List[str] = []
         seen = set()
+        # IMPORTANT BUG FIX: once a team is ALL OUT, Cricbuzz drops the
+        # wicket count entirely from the summary line (e.g. "KRL 200 (20)"
+        # instead of the usual "KRL 200/9 (19.5)"). The old pattern
+        # REQUIRED a "/wickets" part, so a finished-match score like this
+        # matched NOTHING - all_scores came back empty, `score` fell back
+        # to NOT_FOUND, and the whole response then got treated as "match
+        # not live" by scoreboard_generator.py/commentary_generator.py -
+        # discarding the match_result too, so the final winner never showed
+        # up anywhere. The wickets group below is now OPTIONAL; when it's
+        # missing we default to 10 (all out is the only time Cricbuzz omits
+        # it in this summary format).
         for team, runs, wickets, overs in re.findall(
-            r"([A-Z]{2,4})\s+(\d+)\s*[/\-]\s*(\d+)\s*\(\s*([\d.]+)\s*\)",
+            r"([A-Z]{2,4})\s+(\d+)(?:\s*[/\-]\s*(\d+))?\s*\(\s*([\d.]+)\s*\)",
             region,
         ):
             key = team.upper()
             if key in seen:
                 continue
             seen.add(key)
-            scores.append(f"{team} {runs}/{wickets} ({overs})")
+            wk = wickets if wickets else "10"
+            scores.append(f"{team} {runs}/{wk} ({overs})")
 
         return scores
 
@@ -539,18 +562,27 @@ class ScoreService:
             # approach can never see dot balls, and can merge multiple
             # deliveries into one wrong combined number).
             #
-            # IMPORTANT BUG FIX: Cricbuzz also uses "Wd" (wide) and "Nb"
-            # (no-ball) as tokens here, e.g. "Recent : 0 0 1 1 Wd". The old
-            # pattern's alternation was `[0-9]+|W`, which matched ONLY the
-            # "W" inside "Wd" and silently dropped the trailing "d" - so a
-            # WIDE ball was being reported (and then rendered/spoken) as a
-            # WICKET. The alternatives below are tried longest-first
-            # (Wd/Nb/Lb/B before the bare "W") so multi-letter extras are
-            # matched in FULL and never get truncated into a fake "W".
+            # IMPORTANT BUG FIX #1: Cricbuzz also uses "Wd" (wide) and "Nb"
+            # (no-ball) as tokens here. The old pattern's alternation was
+            # `[0-9]+|W`, which matched ONLY the "W" inside "Wd" and
+            # silently dropped the trailing "d" - so a WIDE ball was being
+            # reported (and then rendered/spoken) as a WICKET.
+            #
+            # IMPORTANT BUG FIX #2: extras can ALSO carry an embedded run
+            # count on either side - e.g. "Wd1"/"1Wd" (one extra run scored
+            # on top of the automatic wide run) or "4Nb" (four runs off a
+            # no-ball). `\d*(?:Wd|Nb|Lb|B)\d*` absorbs any such digits on
+            # either side as part of the SAME token, so e.g. "1Wd" is never
+            # split into a stray "1" (fake single) plus a broken remainder.
+            # This whole alternative is tried BEFORE the bare "W"/digit
+            # alternatives at every position, so it always wins first when
+            # it applies - a bare "W" can only ever mean an actual wicket.
             recent_balls: List[str] = []
             recent_match = re.search(
-                r"Recent\s*:\s*((?:Wd|Nb|Lb|B|[0-9]+|W)(?:\s+(?:Wd|Nb|Lb|B|[0-9]+|W))*)",
+                r"Recent\s*:\s*((?:\d*(?:Wd|Nb|Lb|B)\d*|W|[0-9]+)"
+                r"(?:\s+(?:\d*(?:Wd|Nb|Lb|B)\d*|W|[0-9]+))*)",
                 page_text,
+                re.IGNORECASE,
             )
             if recent_match:
                 recent_balls = recent_match.group(1).split()
