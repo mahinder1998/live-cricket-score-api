@@ -45,7 +45,7 @@ RTMP_BASE_URL = "rtmp://a.rtmp.youtube.com/live2/"
 # Set this to True to test the whole pipeline WITHOUT a YouTube stream key.
 # Instead of pushing to YouTube, it records ~30 seconds to test_output.mp4
 # so you can download and watch it to confirm video+audio are working.
-TEST_MODE = True
+TEST_MODE = False
 TEST_DURATION_SECONDS = 30
 
 VIDEO_WIDTH, VIDEO_HEIGHT = 1280, 720
