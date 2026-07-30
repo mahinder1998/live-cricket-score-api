@@ -1025,9 +1025,10 @@ def main():
         pulse_phase = (now % PULSE_PERIOD_SECONDS) / PULSE_PERIOD_SECONDS
 
         img = render_board(state, history, popup=popup_type, popup_progress=popup_progress or 0.0, pulse_phase=pulse_phase)
-        img.save(OUTPUT_IMAGE + ".tmp", format="PNG")
-        os.replace(OUTPUT_IMAGE + ".tmp", OUTPUT_IMAGE)
+        tmp_path = os.path.join(os.path.dirname(OUTPUT_IMAGE) or ".", "." + os.path.basename(OUTPUT_IMAGE) + ".tmp")
+        img.save(tmp_path, format="PNG")
+        os.replace(tmp_path, OUTPUT_IMAGE)
         time.sleep(RENDER_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    main()   
+    main()
