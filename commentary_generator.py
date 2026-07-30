@@ -1,5 +1,5 @@
 """
-Commentary Generator - Phase 2 + 3 (Hindi + TTS integrated) - v2
+Commentary Generator - Phase 2 + 3 (Hindi + TTS integrated) - v3
 ----------------------------------------------------------------------
 Polls the local live-cricket-score-api, detects what changed,
 generates an ORIGINAL Hindi commentary sentence, and converts it
@@ -139,7 +139,7 @@ def append_ball_event(tag):
         with open(BALL_HISTORY_FILE, "w") as f:
             json.dump(history, f)
     except Exception as e:
-        print(f"[warn] could not write ball history: {e}")
+        print(f"[warn] could not write ball history: {e}", flush=True)
 
 
 def get_batsman_runs(batsman):
@@ -183,7 +183,7 @@ def fetch_state():
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
-        print(f"[warn] could not fetch score: {e}")
+        print(f"[warn] could not fetch score: {e}", flush=True)
         return None
 
 def generate_commentary(prev, curr):
@@ -277,8 +277,21 @@ async def text_to_speech(text, filepath):
     communicate = edge_tts.Communicate(text, VOICE, rate=VOICE_RATE, pitch=VOICE_PITCH)
     await communicate.save(filepath)
 
+async def text_to_speech_atomic(text, final_path):
+    """Saves the TTS audio to a TEMP filename first, then renames it to
+    the final .mp3 name only once fully written. This is essential: without
+    it, go_live.py's audio_writer (which continuously scans audio_queue/
+    for *.mp3 files) can grab a file WHILE edge-tts is still writing it,
+    getting a truncated/corrupt mp3 that ffmpeg then fails to decode
+    ("Failed to find two consecutive MPEG audio frames"). The temp name
+    uses a non-'.mp3' suffix so it can never accidentally match the
+    audio_writer's "*.mp3" glob pattern while the write is in progress."""
+    tmp_path = final_path + ".tmp"
+    await text_to_speech(text, tmp_path)
+    os.rename(tmp_path, final_path)
+
 def main():
-    print(f"Starting Hindi commentary generator (reads {MATCH_ID_FILE} live, currently: {get_current_match_id()})")
+    print(f"Starting Hindi commentary generator (reads {MATCH_ID_FILE} live, currently: {get_current_match_id()})", flush=True)
     prev_state = None
     clip_number = 1
 
@@ -286,21 +299,21 @@ def main():
         curr_state = fetch_state()
 
         if curr_state and curr_state.get("score") == "score not found":
-            print("[info] Match abhi live nahi hai. Wait kar rahe hain...")
+            print("[info] Match abhi live nahi hai. Wait kar rahe hain...", flush=True)
         elif curr_state:
             new_lines = generate_commentary(prev_state, curr_state)
             for line in new_lines:
-                print(f">> {line}")
+                print(f">> {line}", flush=True)
                 filename = os.path.join(AUDIO_DIR, f"{clip_number:04d}.mp3")
                 try:
-                    asyncio.run(text_to_speech(line, filename))
-                    print(f"   [audio saved] {filename}")
+                    asyncio.run(text_to_speech_atomic(line, filename))
+                    print(f"   [audio saved] {filename}", flush=True)
                     clip_number += 1
                 except Exception as e:
-                    print(f"   [warn] TTS failed: {e}")
+                    print(f"   [warn] TTS failed: {e}", flush=True)
             prev_state = curr_state
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    main() 
+    main()  
