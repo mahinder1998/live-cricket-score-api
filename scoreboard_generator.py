@@ -1031,4 +1031,4 @@ def main():
         time.sleep(RENDER_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    main() 
+    main()
