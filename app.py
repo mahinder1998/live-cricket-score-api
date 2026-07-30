@@ -21,6 +21,40 @@ NOT_FOUND = "score not found"
 REQUEST_TIMEOUT = "request timeout"
 INVALID_MATCH_ID = "invalid score id"
 
+# Matches a player name made of words (letters, dots, apostrophes, hyphens),
+# used when scraping the live "Batter R B 4s 6s SR" / "Bowler O M R W ECO"
+# tables directly off the page text.
+NAME_CHARS = r"[A-Za-z][A-Za-z.'\-]*(?:\s[A-Za-z][A-Za-z.'\-]*)*"
+
+# Checked in order - first one found in the page text wins. Covers the
+# common break/stoppage states Cricbuzz shows between overs, innings, days.
+STATUS_KEYWORDS = [
+    "Innings Break",
+    "Strategic Time-out",
+    "Strategic Timeout",
+    "Rain Delay",
+    "Bad Light",
+    "Wet Outfield",
+    "Drinks Break",
+    "Tea Break",
+    "Lunch Break",
+    "Stumps",
+    "Match Delayed",
+    "Match Abandoned",
+    "Match Interrupted",
+]
+
+# Matches the final result line Cricbuzz shows once a match has finished,
+# e.g. "Galle Gallants won by 5 wickets", "India beat Australia by 20 runs
+# (D/L method)", plus the no-clear-winner variants.
+RESULT_PATTERNS = [
+    r"([A-Za-z][A-Za-z .]{1,30}?\s+won\s+by\s+\d+\s+(?:runs?|wickets?)(?:\s*\([^)]+\))?)",
+    r"([A-Za-z][A-Za-z .]{1,30}?\s+beat\s+[A-Za-z][A-Za-z .]{1,30}?\s+by\s+\d+\s+(?:runs?|wickets?))",
+    r"(Match\s+Tied)",
+    r"(No\s+Result)",
+    r"(Match\s+Drawn)",
+]
+
 
 class APIError(Exception):
     def __init__(self, status_code: int, message: str):
@@ -31,16 +65,27 @@ class APIError(Exception):
 class Batsman(BaseModel):
     name: str = NOT_FOUND
     score: str = NOT_FOUND
+    on_strike: bool = False  # True for the batsman currently on strike (Cricbuzz marks this with "*")
 
 
 class Bowler(BaseModel):
     name: str = NOT_FOUND
+    overs: str = NOT_FOUND
+    maidens: str = NOT_FOUND
+    runs: str = NOT_FOUND
+    wickets: str = NOT_FOUND
+    economy: str = NOT_FOUND
 
 
 class ScoreResponse(BaseModel):
     status: str
     title: str
     score: str
+    all_scores: List[str] = []   # every innings score found (e.g. both teams in a Test)
+    target_info: str = ""        # "XYZ need N runs" style text, if found
+    match_status: str = ""       # "Innings Break" / "Stumps" / "Rain Delay" etc, if detected
+    match_result: str = ""       # "TEAM won by N runs/wickets" / "Match Tied" / "No Result", once the match ends
+    recent_balls: List[str] = []  # ground-truth ball-by-ball tags from Cricbuzz's own "Recent" widget
     current_batsmen: List[Batsman]
     current_bowler: Bowler
 
@@ -157,8 +202,15 @@ class ScoreService:
     @classmethod
     def format_tree(cls, data: ScoreResponse) -> str:
         batsmen_lines = "\n".join(
-            f"│   ├── {player.name} : {player.score}"
+            f"│   ├── {player.name}{' *' if player.on_strike else ''} : {player.score}"
             for player in data.current_batsmen
+        )
+
+        bowler_line = (
+            f"{data.current_bowler.name}  "
+            f"O:{data.current_bowler.overs} M:{data.current_bowler.maidens} "
+            f"R:{data.current_bowler.runs} W:{data.current_bowler.wickets} "
+            f"ECO:{data.current_bowler.economy}"
         )
 
         return (
@@ -166,10 +218,147 @@ class ScoreService:
             "│\n"
             f"├── Match    : {data.title}\n"
             f"├── Score    : {data.score}\n"
-            f"├── Bowler   : {data.current_bowler.name}\n"
+            f"├── All Scores : {', '.join(data.all_scores) if data.all_scores else NOT_FOUND}\n"
+            f"├── Target   : {data.target_info or NOT_FOUND}\n"
+            f"├── Status   : {data.match_status or NOT_FOUND}\n"
+            f"├── Result   : {data.match_result or NOT_FOUND}\n"
+            f"├── Bowler   : {bowler_line}\n"
             "├── Batsmen\n"
             f"{batsmen_lines}"
         )
+
+    @classmethod
+    def _parse_batsmen_from_table(cls, page_text: str) -> List[Batsman]:
+        """Parses the live 'Batter  R  B  4s  6s  SR' table directly off the
+        page text. This is the primary/preferred source - it also gives us
+        the on-strike marker ('*') which the og:title never contains."""
+        batsmen: List[Batsman] = []
+
+        section = re.search(
+            r"Batter\s+R\s+B\s+4s\s+6s\s+SR(.*?)(?:Bowler\s+O\s+M\s+R\s+W\s+ECO|$)",
+            page_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not section:
+            return batsmen
+
+        for m in re.finditer(
+            rf"({NAME_CHARS})(\s*\*)?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)",
+            section.group(1),
+        ):
+            name, star, runs, balls, _fours, _sixes, _sr = m.groups()
+            batsmen.append(
+                Batsman(
+                    name=cls.clean(name),
+                    score=f"{runs}({balls})",
+                    on_strike=bool(star),
+                )
+            )
+            if len(batsmen) == 2:
+                break
+
+        return batsmen
+
+    @classmethod
+    def _parse_batsmen_from_title(cls, og_title: str) -> List[Batsman]:
+        """Fallback: older method, parses batsmen out of the og:title meta
+        tag. Doesn't know who's on strike (title never marks that)."""
+        batsmen: List[Batsman] = []
+
+        batsman_match = re.search(r"\((.*?)\)\s*\|", og_title)
+        if batsman_match:
+            players = re.findall(
+                r"([A-Za-z\s.'-]+)\s+(\d+\(\d+\))",
+                batsman_match.group(1)
+            )
+            batsmen = [
+                Batsman(name=cls.clean(name), score=cls.clean(score_value))
+                for name, score_value in players[:2]
+            ]
+
+        return batsmen
+
+    @classmethod
+    def _parse_bowler_from_table(cls, page_text: str) -> Optional[Bowler]:
+        """Parses the live 'Bowler  O  M  R  W  ECO' table directly off the
+        page text. Cricbuzz shows the CURRENT bowler's row marked with '*';
+        if two rows are present we prefer the starred (current) one."""
+        section = re.search(
+            r"Bowler\s+O\s+M\s+R\s+W\s+ECO(.*?)(?:Have Your Say|Key Stats|Recent\s*:|$)",
+            page_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not section:
+            return None
+
+        rows = list(re.finditer(
+            rf"({NAME_CHARS})(\s*\*)?\s+(\d+(?:\.\d+)?)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)",
+            section.group(1),
+        ))
+        if not rows:
+            return None
+
+        chosen = next((r for r in rows if r.group(2)), rows[0])
+        name, _star, overs, maidens, runs, wickets, economy = chosen.groups()
+
+        return Bowler(
+            name=cls.clean(name),
+            overs=overs,
+            maidens=maidens,
+            runs=runs,
+            wickets=wickets,
+            economy=economy,
+        )
+
+    @classmethod
+    def _parse_bowler_name_only(cls, page_text: str) -> str:
+        """Last-resort fallback: just get a bowler name if the full table
+        couldn't be parsed for some reason."""
+        bowler_match = re.search(
+            r"Bowler.*?([A-Za-z.'\- ]+?)\s+\d+\s+\d+",
+            page_text,
+            re.IGNORECASE
+        )
+        return cls.clean(bowler_match.group(1)) if bowler_match else NOT_FOUND
+
+    @classmethod
+    def _parse_all_scores_from_page(cls, page_text: str, title: str) -> List[str]:
+        """Reads BOTH teams' scores directly from the page's own score
+        summary (e.g. 'NED 225-9 (50)  NEP 11-1 (4.1)'), which is far more
+        reliable than the og:title meta tag - that tag usually only ever
+        reports whichever team is CURRENTLY batting, so a completed first
+        innings would otherwise vanish entirely once the 2nd innings starts.
+
+        Cricbuzz renders the score with a '-' between runs/wickets visually,
+        but get_text() can also produce '/' depending on markup, so both are
+        accepted. The search is anchored to just before the live "Batter"
+        table (or after our own match title, as a second anchor) so it
+        can't accidentally pick up scores from OTHER matches shown in the
+        site's top ticker bar.
+        """
+        region = page_text
+
+        if title and title != NOT_FOUND and len(title) >= 10:
+            idx = page_text.find(title[:15])
+            if idx != -1:
+                region = page_text[idx:]
+
+        end_anchor = re.search(r"Batter\s+R\s+B\s+4s\s+6s\s+SR", region, re.IGNORECASE)
+        region = region[:end_anchor.start()] if end_anchor else region[:800]
+
+        scores: List[str] = []
+        seen = set()
+        for team, runs, wickets, overs in re.findall(
+            r"([A-Z]{2,4})\s+(\d+)\s*[/\-]\s*(\d+)\s*\(\s*([\d.]+)\s*\)",
+            region,
+        ):
+            key = team.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            scores.append(f"{team} {runs}/{wickets} ({overs})")
+
+        return scores
 
     @classmethod
     async def fetch_score(cls, match_id: str) -> ScoreResponse:
@@ -205,63 +394,129 @@ class ScoreService:
             og_tag = soup.find("meta", property="og:title")
             og_title = og_tag.get("content", "") if og_tag else ""
 
-            score = NOT_FOUND
-
-            score_match = re.search(
-                r"([A-Z]{2,4})\s+(\d+)/(\d+)\s*\(([\d.]+)\)",
-                og_title
-            )
-
-            if score_match:
-                team, runs, wickets, overs = score_match.groups()
-                score = f"{team} {runs}/{wickets} ({overs})"
-
-            batsmen = []
-
-            batsman_match = re.search(
-                r"\((.*?)\)\s*\|",
-                og_title
-            )
-
-            if batsman_match:
-                players = re.findall(
-                    r"([A-Za-z\s.'-]+)\s+(\d+\(\d+\))",
-                    batsman_match.group(1)
-                )
-
-                batsmen = [
-                    Batsman(
-                        name=cls.clean(name),
-                        score=cls.clean(score_value)
-                    )
-                    for name, score_value in players[:2]
-                ]
-
-            if len(batsmen) < 2:
-                batsmen = cls.default_batsmen()
-
             page_text = cls.clean(
                 soup.get_text(" ", strip=True)
             )
 
-            bowler_match = re.search(
-                r"Bowler.*?([A-Za-z.'\- ]+?)\s+\d+\s+\d+",
-                page_text,
+            # ---- All scores: prefer reading BOTH teams directly off the
+            # page's own score summary (reliable even after the first
+            # innings has finished and dropped out of the title). Falls
+            # back to the og:title meta tag only if that yields nothing. ----
+            all_scores = cls._parse_all_scores_from_page(page_text, title)
+            if not all_scores:
+                for team, runs, wickets, overs in re.findall(
+                    r"([A-Z]{2,4})\s+(\d+)/(\d+)\s*\(([\d.]+)\)",
+                    og_title
+                ):
+                    all_scores.append(f"{team} {runs}/{wickets} ({overs})")
+
+            score = all_scores[0] if all_scores else NOT_FOUND
+
+            # ---- Batsmen: prefer the live scorecard table (gives on-strike
+            # marker too), fall back to og:title parsing if that fails ----
+            # IMPORTANT: only fall back further when we found NOTHING at
+            # all. A partner who's just been dismissed (new batter not yet
+            # facing a ball) is a completely normal state where Cricbuzz
+            # legitimately shows only ONE batter row - that single valid
+            # entry must be kept, not thrown away in favour of two "score
+            # not found" placeholders.
+            batsmen = cls._parse_batsmen_from_table(page_text)
+            if not batsmen:
+                batsmen = cls._parse_batsmen_from_title(og_title)
+            if not batsmen:
+                batsmen = cls.default_batsmen()
+
+            # ---- Bowler: prefer the live scorecard table (gives full
+            # O/M/R/W/ECO), fall back to name-only if that fails ----
+            bowler = cls._parse_bowler_from_table(page_text)
+            if bowler is None:
+                bowler = Bowler(name=cls._parse_bowler_name_only(page_text))
+
+            # IMPORTANT: Cricbuzz's page also includes a top ticker bar
+            # listing OTHER live matches (e.g. "NED vs NEP - Need 1...",
+            # "WEF vs TRE - TRE opt..."). If we search the entire page text
+            # for target/status phrases, we can accidentally pick up some
+            # OTHER match's status (e.g. seeing "Innings Break" that
+            # actually belongs to a different game entirely). To avoid
+            # this, we anchor the search to start at THIS match's own
+            # score line (e.g. "NED 225") - found via the abbreviation we
+            # already parsed into all_scores - and end at the Batter
+            # table. This is more reliable than a fixed character offset,
+            # since it doesn't depend on how much nav/ticker/ad text
+            # happens to precede it on any given page.
+            info_window = page_text
+            start_idx = 0
+            if all_scores:
+                first_abbr = all_scores[0].split()[0] if all_scores[0].split() else None
+                if first_abbr:
+                    anchor_match = re.search(rf"\b{re.escape(first_abbr)}\s+\d+", page_text)
+                    if anchor_match:
+                        start_idx = anchor_match.start()
+            batter_idx = page_text.lower().find("batter", start_idx)
+            end_idx = batter_idx if batter_idx != -1 else len(page_text)
+            info_window = page_text[start_idx:end_idx]
+
+            # Best-effort search for a "need N runs" / target/status line.
+            # TIGHTLY bounded (can't run on into unrelated trailing text),
+            # AND anchored with \b + a longer name allowance (2-20 letters)
+            # so full team names like "Nepal" or "Netherlands" aren't cut
+            # into the middle of the word (which used to produce garbled
+            # output like "epal need 214 runs" instead of "Nepal need 215
+            # runs" - {2,4} was too short and had no word-boundary anchor).
+            target_match = re.search(
+                r"\b([A-Za-z]{2,20}\s+need\s+\d+\s+runs?"
+                r"(?:\s+(?:in|from|off)\s+[\d.]+\s+(?:balls?|overs?))?"
+                r"(?:\s+to\s+win)?)",
+                info_window,
                 re.IGNORECASE
             )
+            target_info = cls.clean(target_match.group(1)) if target_match else ""
+            if target_info == NOT_FOUND:
+                target_info = ""
 
-            bowler_name = (
-                cls.clean(bowler_match.group(1))
-                if bowler_match
-                else NOT_FOUND
+            # Detect innings breaks / stoppages so the scoreboard can show a
+            # clear status instead of just blank batter/bowler cards.
+            match_status = ""
+            for keyword in STATUS_KEYWORDS:
+                if re.search(rf"\b{re.escape(keyword)}\b", info_window, re.IGNORECASE):
+                    match_status = keyword
+                    break
+
+            # Detect the final match result (once the match has finished).
+            # Checked independently of match_status since a finished match
+            # should show the RESULT, not a break/stoppage label.
+            match_result = ""
+            for pattern in RESULT_PATTERNS:
+                m = re.search(pattern, info_window, re.IGNORECASE)
+                if m:
+                    match_result = cls.clean(m.group(1))
+                    break
+
+            # Ground-truth ball-by-ball tags, straight from Cricbuzz's own
+            # "Recent : 4 4 1 4 1 2" widget - oldest ball first, newest
+            # (most recent) last. This is far more reliable than inferring
+            # events from score snapshots polled every few seconds (that
+            # approach can never see dot balls, and can merge multiple
+            # deliveries into one wrong combined number).
+            recent_balls: List[str] = []
+            recent_match = re.search(
+                r"Recent\s*:\s*((?:[0-9]+|W)(?:\s+(?:[0-9]+|W))*)",
+                page_text,
             )
+            if recent_match:
+                recent_balls = recent_match.group(1).split()
 
             return ScoreResponse(
                 status="success",
                 title=title,
                 score=score,
+                all_scores=all_scores,
+                target_info=target_info,
+                match_status=match_status,
+                match_result=match_result,
+                recent_balls=recent_balls,
                 current_batsmen=batsmen,
-                current_bowler=Bowler(name=bowler_name)
+                current_bowler=bowler
             )
 
         except httpx.TimeoutException:
@@ -415,6 +670,11 @@ async def root(
             status="success",
             title="Live Score API",
             score=NOT_FOUND,
+            all_scores=[],
+            target_info="",
+            match_status="",
+            match_result="",
+            recent_balls=[],
             current_batsmen=ScoreService.default_batsmen(),
             current_bowler=Bowler()
         )

@@ -162,7 +162,7 @@ def build_ffmpeg_command(stream_key):
 
         "-map", "0:v", "-map", "[aout]",
 
-        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k",
+        "-c:v", "libx264", "-preset", "medium", "-b:v", "4000k", "-maxrate", "4500k", "-bufsize", "8000k",
         "-pix_fmt", "yuv420p", "-g", str(FRAMERATE * 2),
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
     ] + output_args
