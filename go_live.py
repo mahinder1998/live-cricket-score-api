@@ -53,22 +53,11 @@ FRAMERATE = 2          # scoreboard doesn't need to be smooth, 2fps is plenty
 AUDIO_SAMPLE_RATE = 24000
 SPEECH_FIFO = "/tmp/speech_audio.fifo"
 
-# --- Bitrate tuned to this VPS's actual measured upload speed, which is
-# severely constrained and unstable (speedtest showed anywhere from ~0 to
-# 1.65 Mbit/s upload). Kept well under that ceiling with a large safety
-# margin, since even brief dips toward 0 would otherwise stall the stream.
-# --- Maximum-stability settings for long (2-3hr) matches on a constrained/
-# unstable VPS connection. Downscaling the ENCODE resolution (not the
-# board.png itself, which stays 1280x720) means the same visual clarity
-# needs far fewer bits, letting us run at a much safer bitrate. The bigger
-# bufsize (~4x maxrate) gives ffmpeg room to absorb brief network dips
-# without stalling/disconnecting, which matters more than raw quality for
-# a mostly-static scoreboard graphic refreshed only a few times a second.
-# --- BALANCED profile: noticeably better video AND audio quality than the
-# ultra-safe settings, while still staying well under the VPS's more
-# typical observed upload speed (1.4-2.96 Mbps in repeated tests). If
-# "Poor" comes back during a real match, dial VIDEO_BITRATE/MAXRATE and
-# AUDIO_BITRATE back down toward the previous safe values (350k/420k/64k).
+# --- BALANCED profile, re-tried after upgrading the VM from e2-micro to
+# e2-medium (better CPU + network allocation). This exact profile failed
+# on the old e2-micro (actual bitrate dropped to ~358 Kbps under load),
+# but e2-medium has meaningfully more network capacity to work with.
+# If "Poor" comes back, dial these down toward 854x480 / 350k / 420k / 64k.
 ENCODE_WIDTH, ENCODE_HEIGHT = 960, 540
 VIDEO_BITRATE = "800k"
 VIDEO_MAXRATE = "1000k"
