@@ -109,3 +109,4 @@ venv.bak/
 .spacestream_key.txt
 *.mp3
 board.png
+match_id.txt
