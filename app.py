@@ -189,6 +189,46 @@ class ScoreService:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    # Caches the last known-good ScoreResponse per match, used by the
+    # monotonic guard below. Cricbuzz's own backend can occasionally
+    # serve a slightly-stale snapshot on one request and then "catch up"
+    # on the next - since scoreboard_generator.py and commentary_generator.py
+    # both poll this API frequently and independently, that stale blip was
+    # visible as the overs count appearing to jump backward for a moment
+    # (e.g. 32 -> 30 -> 31). Guarding here keeps both of them always in
+    # sync and always moving forward.
+    _last_good_response: dict = {}
+
+    @classmethod
+    def _apply_monotonic_guard(cls, match_id: str, new_response: "ScoreResponse") -> "ScoreResponse":
+        def parse_overs(resp):
+            m = re.search(r"\(([\d.]+)\)", resp.score or "")
+            return float(m.group(1)) if m else None
+
+        def team_prefix(resp):
+            parts = (resp.score or "").split()
+            return parts[0] if parts else None
+
+        last = cls._last_good_response.get(match_id)
+        if last is None:
+            cls._last_good_response[match_id] = new_response
+            return new_response
+
+        new_overs = parse_overs(new_response)
+        last_overs = parse_overs(last)
+
+        # Only compare within the SAME team/innings - a genuine innings
+        # change legitimately resets overs to 0, and that must go through.
+        if (new_overs is not None and last_overs is not None
+                and team_prefix(new_response) == team_prefix(last)
+                and new_overs < last_overs):
+            # This snapshot looks stale/out-of-order - serve the last
+            # good one instead so downstream consumers never see it regress.
+            return last
+
+        cls._last_good_response[match_id] = new_response
+        return new_response
+
     @staticmethod
     def clean(text: str) -> str:
         if not text:
@@ -506,7 +546,7 @@ class ScoreService:
             if recent_match:
                 recent_balls = recent_match.group(1).split()
 
-            return ScoreResponse(
+            result = ScoreResponse(
                 status="success",
                 title=title,
                 score=score,
@@ -518,6 +558,7 @@ class ScoreService:
                 current_batsmen=batsmen,
                 current_bowler=bowler
             )
+            return cls._apply_monotonic_guard(match_id, result)
 
         except httpx.TimeoutException:
             raise APIError(408, REQUEST_TIMEOUT)
@@ -737,4 +778,4 @@ async def global_error_handler(request: Request, exc: Exception):
             "code": 500,
             "message": "internal server error"
         }
-    )   
+    )
